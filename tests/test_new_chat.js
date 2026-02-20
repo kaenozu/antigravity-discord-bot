@@ -13,6 +13,10 @@ async function runTest() {
     }
 
     const before = await getChatSnapshot(cdp);
+    if (!before.layoutRecognized) {
+        console.error(`[FAILED] Chat layout not recognized before test: ${before.reason || 'unknown'}`);
+        process.exit(1);
+    }
     console.log(`[INFO] Before new chat: title="${before.title || 'null'}", generating=${before.generatingIndicator}`);
 
     console.log('[INFO] Starting a New Chat to clear the workspace...');
@@ -27,6 +31,10 @@ async function runTest() {
     await new Promise(r => setTimeout(r, 4000));
 
     const afterReset = await getChatSnapshot(cdp);
+    if (!afterReset.layoutRecognized) {
+        console.error(`[FAILED] Chat layout not recognized after reset: ${afterReset.reason || 'unknown'}`);
+        process.exit(1);
+    }
     console.log(`[INFO] After new chat: title="${afterReset.title || 'null'}", generating=${afterReset.generatingIndicator}`);
 
     console.log('[INFO] Injecting instruction to build a Dice App...');
