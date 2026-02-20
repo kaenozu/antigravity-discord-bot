@@ -128,6 +128,107 @@ function domHelpersExpr() {
             return null;
         }
 
+        function isUiChromeLine(line) {
+            const t = norm(line);
+            if (!t) return true;
+            if (t.startsWith('ask anything,')) return true;
+            if (t.startsWith('warning: your antigravity installation')) return true;
+            if (t.startsWith('thought for ')) return true;
+            if (t === 'analyzed' || t.startsWith('analyzed ')) return true;
+            if (t === 'generating' || t === 'generating..' || t === 'generating...' || t.startsWith('generating ')) return true;
+            if (t.startsWith('allow directory access')) return true;
+            if (t.startsWith('allow file access')) return true;
+            if (t.startsWith('allow access to')) return true;
+            if (t.startsWith('directory access to')) return true;
+            if (t === 'good' || t === 'bad' || t === 'send' || t === 'model' || t === 'new') return true;
+            if (t === 'planning' || t === 'fast' || t === 'conversation mode') return true;
+            if (t.startsWith('agent can ')) return true;
+            if (t.startsWith('gemini ') || t.startsWith('claude ') || t.startsWith('gpt-')) return true;
+            return false;
+        }
+
+        function splitMeaningfulLines(text) {
+            return String(text || '')
+                .split('\\n')
+                .map(s => s.trim())
+                .filter(Boolean)
+                .filter(s => s.length >= 12 && !isUiChromeLine(s));
+        }
+
+        function isWorkbenchWideText(text) {
+            const t = norm(text).replace(/\\s+/g, ' ');
+            if (!t) return false;
+            return (
+                t.includes('file edit selection view go run terminal help') ||
+                t.includes('explorer search source control run and debug extensions') ||
+                t.includes('open editors')
+            );
+        }
+
+        function findConversationRoot(SELECTORS, layout) {
+            const activeLayout = layout || getBestLayout(SELECTORS);
+            if (!activeLayout || !activeLayout.editor) return null;
+
+            let node = activeLayout.container || activeLayout.editor;
+            let best = node;
+            for (let depth = 0; depth < 12 && node; depth++) {
+                node = node.parentElement;
+                if (!node) break;
+                if (node === activeLayout.doc.body || node === activeLayout.doc.documentElement) break;
+                if (!isVisible(node)) continue;
+                if (!node.contains(activeLayout.editor)) continue;
+
+                const text = (node.innerText || '').trim();
+                if (text.length < 20) continue;
+                if (isWorkbenchWideText(text)) break;
+                best = node;
+            }
+            return best;
+        }
+
+        function getConversationLines(SELECTORS) {
+            const layout = getBestLayout(SELECTORS);
+            if (!layout) {
+                let best = null;
+                let bestCount = -1;
+                for (const item of getTargetDocs()) {
+                    const doc = item.doc;
+                    const body = doc && doc.body ? (doc.body.innerText || '') : '';
+                    const lines = splitMeaningfulLines(body);
+                    if (lines.length > bestCount) {
+                        best = { source: item.source, lines };
+                        bestCount = lines.length;
+                    }
+                }
+
+                if (best && best.lines.length > 0) {
+                    return {
+                        layoutRecognized: false,
+                        fallback: true,
+                        reason: 'chat_layout_not_found_using_doc_fallback',
+                        lines: best.lines.slice(-200),
+                        docSource: best.source,
+                        rootTag: null,
+                        rootClass: null
+                    };
+                }
+                return { layoutRecognized: false, fallback: false, reason: 'chat_layout_not_found', lines: [] };
+            }
+
+            const root = findConversationRoot(SELECTORS, layout) || layout.doc.body;
+            if (!root) return { layoutRecognized: true, reason: 'conversation_root_not_found', lines: [] };
+
+            const lines = splitMeaningfulLines(root.innerText || '');
+            return {
+                layoutRecognized: true,
+                reason: lines.length > 0 ? 'ok' : 'conversation_empty',
+                lines,
+                docSource: layout.docSource,
+                rootTag: root.tagName || null,
+                rootClass: (root.getAttribute && root.getAttribute('class')) ? String(root.getAttribute('class')).slice(0, 200) : null
+            };
+        }
+
         function hasGenerationIndicator(doc, container) {
             const cancel = doc.querySelector('[data-tooltip-id="input-send-button-cancel-tooltip"]');
             if (cancel && isVisible(cancel)) return true;
@@ -166,6 +267,7 @@ function domHelpersExpr() {
 }
 
 export async function injectMessage(cdp, text) {
+    await resolveApprovalPromptIfPresent(cdp);
     const safeText = JSON.stringify(text);
     const EXP = `(async () => {
         const SELECTORS = ${JSON.stringify(SELECTORS)};
@@ -281,6 +383,7 @@ export async function injectMessage(cdp, text) {
 }
 
 export async function startNewChat(cdp) {
+    await resolveApprovalPromptIfPresent(cdp);
     const EXP = `(async () => {
         const SELECTORS = ${JSON.stringify(SELECTORS)};
         ${domHelpersExpr()}
@@ -370,6 +473,7 @@ async function checkIsGenerating(cdp) {
 export async function waitForGenerationStart(cdp, timeoutMs = 25000) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
+        await resolveApprovalPromptIfPresent(cdp);
         if (await checkIsGenerating(cdp)) return true;
         await new Promise(r => setTimeout(r, 400));
     }
@@ -390,4 +494,170 @@ export async function getChatSnapshot(cdp) {
         title: null,
         generatingIndicator: false
     };
+}
+
+async function probeAssistantOutput(cdp, promptText) {
+    const safePrompt = JSON.stringify(String(promptText || '').trim());
+    const EXP = `(() => {
+        const SELECTORS = ${JSON.stringify(SELECTORS)};
+        ${domHelpersExpr()}
+        const convo = getConversationLines(SELECTORS);
+        if (!convo.layoutRecognized && !convo.fallback) {
+            return {
+                layoutRecognized: false,
+                seenPrompt: false,
+                outputFound: false,
+                outputLine: null,
+                reason: convo.reason || 'chat_layout_not_found'
+            };
+        }
+
+        const prompt = ${safePrompt};
+        const lines = convo.lines || [];
+        let idx = -1;
+        for (let i = lines.length - 1; i >= 0; i--) {
+            if (lines[i].includes(prompt)) {
+                idx = i;
+                break;
+            }
+        }
+
+        const pool = idx >= 0 ? lines.slice(idx + 1) : lines;
+        const candidates = pool.filter(line => {
+            if (!line || line.length < 12) return false;
+            if (line.includes(prompt)) return false;
+            if (isUiChromeLine(line)) return false;
+            return true;
+        });
+
+        return {
+            layoutRecognized: Boolean(convo.layoutRecognized),
+            usedFallback: Boolean(convo.fallback),
+            seenPrompt: idx >= 0,
+            outputFound: candidates.length > 0,
+            outputLine: candidates.length > 0 ? candidates[candidates.length - 1].slice(0, 300) : null,
+            candidateLines: candidates.slice(-40),
+            rootTag: convo.rootTag || null,
+            reason: candidates.length > 0 ? 'ok' : (idx >= 0 ? 'assistant_output_not_found' : 'prompt_not_visible')
+        };
+    })()`;
+
+    const { value } = await evaluateInOrderedContexts(cdp, EXP, false, (v) => Boolean(v?.outputFound));
+    return value || {
+        layoutRecognized: false,
+        seenPrompt: false,
+        outputFound: false,
+        outputLine: null,
+        reason: 'probe_failed'
+    };
+}
+
+export async function captureConversationSignature(cdp) {
+    const EXP = `(() => {
+        const SELECTORS = ${JSON.stringify(SELECTORS)};
+        ${domHelpersExpr()}
+        const convo = getConversationLines(SELECTORS);
+        if (!convo.layoutRecognized && !convo.fallback) {
+            return { ok: false, lines: [], reason: convo.reason || 'chat_layout_not_found' };
+        }
+        return { ok: true, lines: (convo.lines || []).slice(-80), reason: convo.reason || 'ok' };
+    })()`;
+
+    const { value } = await evaluateInOrderedContexts(cdp, EXP, false, (v) => Boolean(v?.ok));
+    return value || { ok: false, lines: [], reason: 'signature_failed' };
+}
+
+export async function waitForAssistantOutput(cdp, promptText, timeoutMs = 60000, baselineLines = []) {
+    const start = Date.now();
+    let last = null;
+    const baselineSet = new Set((baselineLines || []).map(s => String(s).trim()).filter(Boolean));
+    while (Date.now() - start < timeoutMs) {
+        await resolveApprovalPromptIfPresent(cdp);
+        last = await probeAssistantOutput(cdp, promptText);
+        if (last?.seenPrompt && last?.candidateLines?.length) {
+            const fresh = last.candidateLines
+                .map(s => String(s).trim())
+                .filter(s => s && !baselineSet.has(s));
+            if (fresh.length > 0) {
+                return { ok: true, ...last, outputLine: fresh[fresh.length - 1] };
+            }
+        }
+        await new Promise(r => setTimeout(r, 700));
+    }
+    return {
+        ok: false,
+        ...(last || {
+            layoutRecognized: false,
+            seenPrompt: false,
+            outputFound: false,
+            outputLine: null,
+            reason: 'assistant_output_timeout'
+        })
+    };
+}
+
+export async function resolveApprovalPromptIfPresent(cdp) {
+    const EXP = `(() => {
+        ${domHelpersExpr()}
+
+        function includesAny(hay, needles) {
+            const t = norm(hay);
+            return needles.some(n => t.includes(n));
+        }
+
+        const approvalSignals = [
+            'allow directory access',
+            'allow file access',
+            'allow access to',
+            'directory access to',
+            'allow this conversation',
+            'allow workspace access',
+            'permission request',
+            'grant access'
+        ];
+        const denySignals = ['deny', 'reject', 'cancel', \"don't allow\", 'do not allow', 'no'];
+        const allowSignals = ['allow once', 'always allow', 'allow', 'approve', 'yes', 'continue'];
+
+        for (const item of getTargetDocs()) {
+            const doc = item.doc;
+            if (!doc || !doc.body) continue;
+            const body = doc.body.innerText || '';
+            if (!includesAny(body, approvalSignals)) continue;
+
+            const buttons = Array.from(doc.querySelectorAll('button, [role=\"button\"], .cursor-pointer')).filter(isVisible);
+            let allowBtn = null;
+            for (const btn of buttons) {
+                const txt = norm(btn.innerText || btn.getAttribute('aria-label') || btn.getAttribute('title'));
+                if (!txt) continue;
+                if (denySignals.some(d => txt.includes(d))) continue;
+                if (allowSignals.some(a => txt === a || txt.includes(a))) {
+                    allowBtn = btn;
+                    break;
+                }
+            }
+
+            if (!allowBtn) {
+                const fallback = buttons.find(btn => {
+                    const cls = norm(btn.getAttribute('class') || '');
+                    if (!cls) return false;
+                    return cls.includes('primary') || cls.includes('solid') || cls.includes('filled');
+                });
+                if (fallback) allowBtn = fallback;
+            }
+
+            if (allowBtn) {
+                const label = (allowBtn.innerText || allowBtn.getAttribute('aria-label') || '').trim().slice(0, 80);
+                try {
+                    allowBtn.click();
+                    return { handled: true, label, docSource: item.source };
+                } catch (e) {}
+            }
+            return { handled: false, reason: 'approval_prompt_visible_but_no_allow_button' };
+        }
+
+        return { handled: false, reason: 'no_approval_prompt' };
+    })()`;
+
+    const { value } = await evaluateInOrderedContexts(cdp, EXP, false, (v) => Boolean(v?.handled));
+    return value || { handled: false, reason: 'probe_failed' };
 }

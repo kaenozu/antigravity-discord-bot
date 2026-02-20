@@ -1,5 +1,5 @@
 import { ensureCDP } from './cdp_utils.js';
-import { getChatSnapshot, injectMessage, startNewChat, waitForGenerationStart } from './agent_ui_utils.js';
+import { captureConversationSignature, getChatSnapshot, injectMessage, startNewChat, waitForAssistantOutput, waitForGenerationStart } from './agent_ui_utils.js';
 
 async function runTest() {
     console.log('=== Testing Meaningful New Chat Workflow ===');
@@ -35,7 +35,9 @@ async function runTest() {
     }
 
     console.log('[INFO] Injecting instruction to build a Dice App...');
-    const appPrompt = 'Please create a simple dice app (HTML/JS) in this Workspace.';
+    const runId = Date.now();
+    const appPrompt = `Please create a simple dice app (HTML/JS) in this Workspace. [run:${runId}]`;
+    const baseline = await captureConversationSignature(cdp);
     const injectResult = await injectMessage(cdp, appPrompt);
     if (!injectResult.ok) {
         console.error(`[FAILED] Failed to submit generation prompt: ${injectResult.error}`);
@@ -46,13 +48,17 @@ async function runTest() {
     console.log('[INFO] Waiting for generation to start...');
     const started = await waitForGenerationStart(cdp, 25000);
     if (!started) {
-        console.log('[WARN] Generation was not detected within timeout. Prompt submission itself succeeded.');
-        console.log('[SUCCESS] VERIFIED: New Chat + prompt submission is working.');
-        console.log('Test finished.');
-        process.exit(0);
+        console.log('[WARN] Generation was not detected within timeout. Will check actual output.');
     }
 
-    console.log('[SUCCESS] VERIFIED: New Chat + generation start is working.');
+    console.log('[INFO] Waiting for assistant output...');
+    const output = await waitForAssistantOutput(cdp, appPrompt, 70000, baseline.lines || []);
+    if (!output.ok) {
+        console.error(`[FAILED] No assistant output detected. reason=${output.reason}`);
+        process.exit(1);
+    }
+    console.log(`[SUCCESS] Assistant output detected: ${output.outputLine}`);
+    console.log('[SUCCESS] VERIFIED: New Chat + prompt submission + visible output is working.');
     console.log('Test finished.');
     process.exit(0);
 }
