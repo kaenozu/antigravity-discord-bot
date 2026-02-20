@@ -1,5 +1,8 @@
 import { ensureCDP } from './cdp_utils.js';
 import { injectMessage } from './agent_ui_utils.js';
+import { requireUiTestsEnabled } from './ui_test_guard.js';
+
+requireUiTestsEnabled('tests/test_text_generation.js');
 
 async function runTest() {
     console.log('=== Testing Text Generation ===');

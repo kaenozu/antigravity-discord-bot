@@ -1,4 +1,7 @@
 import { ensureCDP } from './cdp_utils.js';
+import { requireUiTestsEnabled } from './ui_test_guard.js';
+
+requireUiTestsEnabled('tests/test_model_switch.js');
 
 async function getCurrentModel(cdp) {
     const EXP = `(() => {

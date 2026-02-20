@@ -1,4 +1,7 @@
 import { ensureCDP } from './cdp_utils.js';
+import { requireUiTestsEnabled } from './ui_test_guard.js';
+
+requireUiTestsEnabled('tests/test_stop_generation.js');
 
 async function stopGeneration(cdp) {
     const EXP = `(() => {

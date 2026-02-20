@@ -1,4 +1,7 @@
 import { ensureCDP } from './cdp_utils.js';
+import { requireUiTestsEnabled } from './ui_test_guard.js';
+
+requireUiTestsEnabled('tests/test_screenshot.js');
 import fs from 'fs';
 import path from 'path';
 
