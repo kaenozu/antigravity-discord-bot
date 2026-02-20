@@ -4,3 +4,4 @@
 # Exceptions (Files/Folders to keep tracked)
 !/antigravity-discord-bot/
 !/.gitignore
+antigravity-discord-bot/dom_dump.json
