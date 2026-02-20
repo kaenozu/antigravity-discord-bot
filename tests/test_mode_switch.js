@@ -1,7 +1,4 @@
 import { ensureCDP } from './cdp_utils.js';
-import { requireUiTestsEnabled } from './ui_test_guard.js';
-
-requireUiTestsEnabled('tests/test_mode_switch.js');
 
 async function getCurrentMode(cdp) {
     const EXP = `(() => {
