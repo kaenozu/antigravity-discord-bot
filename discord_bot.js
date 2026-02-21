@@ -1360,41 +1360,54 @@ client.on('messageCreate', async message => {
 
     // Ignore old slash commands that people might manually type
     if (message.content.startsWith('/')) return;
-    let messageText = message.content || '';
+    // メンション文字列（<@ユーザーID> 形式）を除去して整形
+    let messageText = (message.content || '').replace(/<@!?\d+>/g, '').trim();
     if (message.attachments.size > 0) {
-        const uploadDir = path.join(WORKSPACE_ROOT, 'discord_uploads');
-        if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+        if (!WORKSPACE_ROOT) {
+            logInteraction('UPLOAD_ERROR', 'Cannot handle attachments: WORKSPACE_ROOT is not set.');
+            await message.reply('⚠️ 添付ファイルの処理には WATCH_DIR の設定が必要です。').catch(() => { });
+        } else {
+            const uploadDir = path.join(WORKSPACE_ROOT, 'discord_uploads');
+            if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-        const downloadedFiles = [];
-        for (const [, attachment] of message.attachments) {
-            try {
-                const fileName = `${Date.now()}_${path.basename(attachment.name)}`;
-                const filePath = path.join(uploadDir, fileName);
-                const fileData = await downloadFile(attachment.url);
-                fs.writeFileSync(filePath, fileData);
-                downloadedFiles.push({ name: attachment.name, path: filePath });
-                logInteraction('UPLOAD', `Downloaded: ${attachment.name} -> ${filePath}`);
-            } catch (e) {
-                logInteraction('UPLOAD_ERROR', `Failed to download ${attachment.name}: ${e.message}`);
+            const downloadedFiles = [];
+            for (const [, attachment] of message.attachments) {
+                try {
+                    const fileName = `${Date.now()}_${path.basename(attachment.name)}`;
+                    const filePath = path.join(uploadDir, fileName);
+                    const fileData = await downloadFile(attachment.url);
+                    fs.writeFileSync(filePath, fileData);
+                    downloadedFiles.push({ name: attachment.name, path: filePath });
+                    logInteraction('UPLOAD', `Downloaded: ${attachment.name} -> ${filePath}`);
+                } catch (e) {
+                    logInteraction('UPLOAD_ERROR', `Failed to download ${attachment.name}: ${e.message}`);
+                }
             }
-        }
 
-        if (downloadedFiles.length > 0) {
-            const fileInfo = downloadedFiles.map(f => `[添付ファイル: ${f.name}] パス: ${f.path}`).join('\n');
-            messageText = messageText ? `${messageText}\n\n${fileInfo}` : fileInfo;
-            message.react('📎');
+            if (downloadedFiles.length > 0) {
+                const fileInfo = downloadedFiles.map(f => `[添付ファイル: ${f.name}] パス: ${f.path}`).join('\n');
+                messageText = messageText ? `${messageText}\n\n${fileInfo}` : fileInfo;
+                await message.react('📎').catch(() => { });
+            }
         }
     }
 
     if (!messageText) return;
 
+    const cdp = await ensureCDP();
+    if (!cdp) {
+        await message.react('❌').catch(() => { });
+        await message.reply('❌ CDP not found. Is Antigravity running?').catch(() => { });
+        return;
+    }
+
     const res = await injectMessage(cdp, messageText);
     if (res.ok) {
-        message.react('✅');
+        await message.react('✅').catch(() => { });
         monitorAIResponse(message, cdp);
     } else {
-        message.react('❌');
-        if (res.error) message.reply(`Error: ${res.error}`);
+        await message.react('❌').catch(() => { });
+        if (res.error) await message.reply(`Error: ${res.error}`).catch(() => { });
     }
 });
 
