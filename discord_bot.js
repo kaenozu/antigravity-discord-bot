@@ -29,6 +29,10 @@ const client = new Client({
 let cdpConnection = null;
 let isGenerating = false;
 let lastActiveChannel = null;
+let lastApprovalMessage = null;
+const processedMessages = new Set();
+let requestQueue = [];
+let isMonitoring = false;
 // 監視対象ディレクトリ（初期化時に設定）
 let WORKSPACE_ROOT = null;
 const LOG_FILE = 'discord_interaction.log';
@@ -639,7 +643,6 @@ async function clickApproval(cdp, allow) {
 
 async function getLastResponse(cdp) {
     const EXP = `(() => {
-            // iframe内のドキュメントを取得
             function getTargetDoc() {
                 const iframes = document.querySelectorAll('iframe');
                 for (let i = 0; i < iframes.length; i++) {
@@ -650,10 +653,36 @@ async function getLastResponse(cdp) {
                 return document;
             }
             const doc = getTargetDoc();
-            const candidates = Array.from(doc.querySelectorAll('[data-message-role="assistant"], .prose, .group.relative.flex.gap-3'));
+            if (!doc) return null;
+            
+            // Try different selectors for modern Antigravity / Cascade
+            const selectors = [
+                '[data-message-role="assistant"]',
+                '.prose',
+                '.group.relative.flex.gap-3',
+                '.markdown-body',
+                '.assistant-message'
+            ];
+            
+            let candidates = [];
+            for (const sel of selectors) {
+                const found = Array.from(doc.querySelectorAll(sel));
+                if (found.length > 0) candidates = candidates.concat(found);
+            }
+            
             if (candidates.length === 0) return null;
-            const lastMsg = candidates[candidates.length - 1];
-            return { text: lastMsg.innerText, images: Array.from(lastMsg.querySelectorAll('img')).map(img => img.src) };
+            
+            // Get the last one that actually has text
+            for (let i = candidates.length - 1; i >= 0; i--) {
+                const text = candidates[i].innerText.trim();
+                if (text.length > 0) {
+                    return { 
+                        text: text, 
+                        images: Array.from(candidates[i].querySelectorAll('img')).map(img => img.src) 
+                    };
+                }
+            }
+            return null;
         })()`;
     for (const ctx of cdp.contexts) {
         try {
@@ -1070,9 +1099,7 @@ function setupFileWatcher() {
     });
 }
 
-let requestQueue = [];
-let isMonitoring = false;
-let lastApprovalMessage = null; // Track the last sent approval text to avoid duplicates
+// --- QUEUE PROCESSING ---
 
 async function processQueue(cdp) {
     if (isMonitoring || requestQueue.length === 0) return;
@@ -1141,22 +1168,32 @@ async function processQueue(cdp) {
             const generating = await checkIsGenerating(cdp);
             if (!generating) {
                 stableCount++;
-                if (stableCount >= 3) {
+                if (stableCount % 5 === 0) logInteraction('DEBUG', `Waiting for generation to finish... (Stable: ${stableCount})`);
+                if (stableCount >= 2) { // 3 -> 2 to be slightly faster
                     const response = await getLastResponse(cdp);
                     if (response) {
+                        logInteraction('SUCCESS', `Response found: ${response.text.substring(0, 50)}...`);
                         const chunks = response.text.match(/[\s\S]{1,1900}/g) || [response.text];
                         await originalMessage.reply({ content: `🤖 **AI Response:**\n${chunks[0]}` });
                         for (let i = 1; i < chunks.length; i++) await originalMessage.channel.send(chunks[i]);
+
+                        isGenerating = false;
+                        isMonitoring = false;
+                        setTimeout(() => processQueue(cdp), 1000);
+                        return;
+                    } else {
+                        // If no response found yet, keep polling even if not generating (might be rendering)
+                        if (stableCount > 15) { // Timeout after ~30s of nothing
+                            logInteraction('ERROR', 'Generation finished but no response text found.');
+                            isGenerating = false;
+                            isMonitoring = false;
+                            setTimeout(() => processQueue(cdp), 1000);
+                            return;
+                        }
                     }
-
-                    isGenerating = false;
-                    isMonitoring = false;
-
-                    // 次のキューがあれば直ちに処理
-                    setTimeout(() => processQueue(cdp), 1000);
-                    return;
                 }
             } else {
+                if (stableCount > 0) logInteraction('DEBUG', 'AI started generating again.');
                 stableCount = 0;
             }
 
@@ -1362,8 +1399,13 @@ client.on('interactionCreate', async interaction => {
 
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
-
-    // Ignore old slash commands that people might manually type
+    if (processedMessages.has(message.id)) return;
+    processedMessages.add(message.id);
+    // Keep size manageable
+    if (processedMessages.size > 100) {
+        const first = processedMessages.values().next().value;
+        processedMessages.delete(first);
+    }
     if (message.content.startsWith('/')) return;
     // メンション文字列（<@ユーザーID> 形式）を除去して整形
     let messageText = (message.content || '').replace(/<@!?\d+>/g, '').trim();
@@ -1409,6 +1451,7 @@ client.on('messageCreate', async message => {
     const res = await injectMessage(cdp, messageText);
     if (res.ok) {
         await message.react('✅').catch(() => { });
+        logInteraction('SUCCESS', `Message ${message.id} injected successfully.`);
         monitorAIResponse(message, cdp);
     } else {
         await message.react('❌').catch(() => { });
