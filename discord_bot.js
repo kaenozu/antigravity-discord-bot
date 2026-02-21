@@ -641,14 +641,25 @@ async function clickApproval(cdp, allow) {
 
 async function getLastResponse(cdp) {
     const EXP = `(() => {
-            // 全iframeとメインドキュメントを対象にする
-            const allDocs = [document];
+            // チャットUIのiframeを優先して探す（cascade-panel を含むもの）
+            const allDocs = [];
             const iframes = document.querySelectorAll('iframe');
-            for (let i = 0; i < iframes.length; i++) {
-                try { if (iframes[i].contentDocument) allDocs.push(iframes[i].contentDocument); } catch(e) {}
-            }
             
-            // Antigravity/Cascade の応答メッセージに使われる可能性のあるセレクター
+            // まずcascade-panelのiframeを優先
+            for (let i = 0; i < iframes.length; i++) {
+                if (iframes[i].src && iframes[i].src.includes('cascade-panel')) {
+                    try { if (iframes[i].contentDocument) allDocs.push(iframes[i].contentDocument); } catch(e) {}
+                }
+            }
+            // 次に他のiframe、最後にメインドキュメント
+            for (let i = 0; i < iframes.length; i++) {
+                if (!iframes[i].src || !iframes[i].src.includes('cascade-panel')) {
+                    try { if (iframes[i].contentDocument) allDocs.push(iframes[i].contentDocument); } catch(e) {}
+                }
+            }
+            allDocs.push(document);
+            
+            // AI応答に特化したセレクター（広すぎるものは除外）
             const selectors = [
                 '[data-message-role="assistant"]',
                 '[data-testid*="assistant"]',
@@ -656,16 +667,8 @@ async function getLastResponse(cdp) {
                 '.prose',
                 '.markdown-body',
                 '.assistant-message',
-                '[class*="assistant"][class*="message"]',
-                '[class*="response"]',
-                '.message-content',
-                'article[class*="group"]',
-                '.group.relative.flex'
+                '.message-content'
             ];
-            
-            let debugInfo = { docsChecked: allDocs.length, iframeCount: iframes.length };
-            let bestCandidate = null;
-            let bestLength = 0;
             
             for (const doc of allDocs) {
                 let candidates = [];
@@ -678,14 +681,14 @@ async function getLastResponse(cdp) {
                 
                 // 重複排除
                 candidates = [...new Set(candidates)];
+                if (candidates.length === 0) continue;
                 
-                // テキストが最も長い最後の要素を取得
+                // 最後の要素（会話の最新応答）からテキストを取得
                 for (let i = candidates.length - 1; i >= 0; i--) {
                     try {
                         const text = (candidates[i].innerText || '').trim();
-                        if (text.length > bestLength) {
-                            bestLength = text.length;
-                            bestCandidate = {
+                        if (text.length > 0) {
+                            return {
                                 text: text,
                                 images: Array.from(candidates[i].querySelectorAll('img')).map(img => img.src)
                             };
@@ -694,32 +697,22 @@ async function getLastResponse(cdp) {
                 }
             }
             
-            if (bestCandidate) return bestCandidate;
-            
-            // 最終フォールバック: 全DOMからAIっぽいテキストブロックを探す
-            for (const doc of allDocs) {
-                try {
-                    // 長い段落テキストを持つ要素を検索 (AIの返答は通常長い)
-                    const paras = Array.from(doc.querySelectorAll('p, div'));
-                    for (let i = paras.length - 1; i >= 0; i--) {
-                        const el = paras[i];
-                        if (el.children.length > 0) continue; // 子要素があるなら親なので除外
-                        const text = (el.innerText || '').trim();
-                        if (text.length > 50 && text.length > bestLength) {
-                            bestLength = text.length;
-                            bestCandidate = { text, images: [] };
-                        }
-                    }
-                } catch(e) {}
-            }
-            
-            return bestCandidate;
+            return null;
         })()`;
-    for (const ctx of cdp.contexts) {
+
+    // injectMessage と同様に cascade-panel コンテキストを優先
+    const targetContexts = cdp.contexts.filter(c =>
+        (c.url && c.url.includes('cascade-panel')) ||
+        (c.name && c.name.includes('Extension'))
+    );
+    const otherContexts = cdp.contexts.filter(c => !targetContexts.includes(c));
+    const contextsToTry = [...targetContexts, ...otherContexts];
+
+    for (const ctx of contextsToTry) {
         try {
             const res = await cdp.call("Runtime.evaluate", { expression: EXP, returnByValue: true, contextId: ctx.id });
             if (res.result?.value?.text) {
-                logInteraction('DEBUG', `Response found in context ${ctx.id}, length: ${res.result.value.text.length}`);
+                logInteraction('DEBUG', `Response found in context ${ctx.id} (${ctx.url || ctx.name || 'unnamed'}), length: ${res.result.value.text.length}`);
                 return res.result.value;
             }
         } catch (e) { }
