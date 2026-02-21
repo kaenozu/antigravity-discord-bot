@@ -390,23 +390,21 @@ async function injectMessage(cdp, text) {
 
 async function checkIsGenerating(cdp) {
     const EXP = `(() => {
-        // Agent Panel Frame を探す
-        function findAgentFrame(win) {
-             const iframes = document.querySelectorAll('iframe');
-             for(let i=0; i<iframes.length; i++) {
-                 if(iframes[i].src.includes('cascade-panel')) {
-                     try { return iframes[i].contentDocument; } catch(e){}
-                 }
-             }
-             return document;
+        // 全iframeとメインドキュメントを検索
+        const docs = [document];
+        const iframes = document.querySelectorAll('iframe');
+        for (let i = 0; i < iframes.length; i++) {
+            try { if (iframes[i].contentDocument) docs.push(iframes[i].contentDocument); } catch(e){}
         }
 
-        const doc = findAgentFrame(window);
-        
-        // キャンセルボタンの存在で生成中かを判定
-        const cancel = doc.querySelector('[data-tooltip-id="input-send-button-cancel-tooltip"]');
-        if (cancel && cancel.offsetParent !== null) return true;
-
+        for (const doc of docs) {
+            // キャンセルボタンの存在で生成中かを判定
+            const cancel = doc.querySelector('[data-tooltip-id="input-send-button-cancel-tooltip"]');
+            if (cancel && cancel.offsetParent !== null) return true;
+            // 送信中スピナーでも判定
+            const spinner = doc.querySelector('[aria-label*="loading"], [aria-label*="Loading"], [class*="spinner"], [class*="loading"]');
+            if (spinner && spinner.offsetParent !== null) return true;
+        }
         return false;
     })()`;
     for (const ctx of cdp.contexts) {
@@ -643,51 +641,87 @@ async function clickApproval(cdp, allow) {
 
 async function getLastResponse(cdp) {
     const EXP = `(() => {
-            function getTargetDoc() {
-                const iframes = document.querySelectorAll('iframe');
-                for (let i = 0; i < iframes.length; i++) {
-                    if (iframes[i].src.includes('cascade-panel')) {
-                        try { return iframes[i].contentDocument; } catch(e) {}
-                    }
-                }
-                return document;
+            // 全iframeとメインドキュメントを対象にする
+            const allDocs = [document];
+            const iframes = document.querySelectorAll('iframe');
+            for (let i = 0; i < iframes.length; i++) {
+                try { if (iframes[i].contentDocument) allDocs.push(iframes[i].contentDocument); } catch(e) {}
             }
-            const doc = getTargetDoc();
-            if (!doc) return null;
             
-            // Try different selectors for modern Antigravity / Cascade
+            // Antigravity/Cascade の応答メッセージに使われる可能性のあるセレクター
             const selectors = [
                 '[data-message-role="assistant"]',
+                '[data-testid*="assistant"]',
+                '[data-testid*="message"]',
                 '.prose',
-                '.group.relative.flex.gap-3',
                 '.markdown-body',
-                '.assistant-message'
+                '.assistant-message',
+                '[class*="assistant"][class*="message"]',
+                '[class*="response"]',
+                '.message-content',
+                'article[class*="group"]',
+                '.group.relative.flex'
             ];
             
-            let candidates = [];
-            for (const sel of selectors) {
-                const found = Array.from(doc.querySelectorAll(sel));
-                if (found.length > 0) candidates = candidates.concat(found);
-            }
+            let debugInfo = { docsChecked: allDocs.length, iframeCount: iframes.length };
+            let bestCandidate = null;
+            let bestLength = 0;
             
-            if (candidates.length === 0) return null;
-            
-            // Get the last one that actually has text
-            for (let i = candidates.length - 1; i >= 0; i--) {
-                const text = candidates[i].innerText.trim();
-                if (text.length > 0) {
-                    return { 
-                        text: text, 
-                        images: Array.from(candidates[i].querySelectorAll('img')).map(img => img.src) 
-                    };
+            for (const doc of allDocs) {
+                let candidates = [];
+                for (const sel of selectors) {
+                    try {
+                        const found = Array.from(doc.querySelectorAll(sel));
+                        if (found.length > 0) candidates = candidates.concat(found);
+                    } catch(e) {}
+                }
+                
+                // 重複排除
+                candidates = [...new Set(candidates)];
+                
+                // テキストが最も長い最後の要素を取得
+                for (let i = candidates.length - 1; i >= 0; i--) {
+                    try {
+                        const text = (candidates[i].innerText || '').trim();
+                        if (text.length > bestLength) {
+                            bestLength = text.length;
+                            bestCandidate = {
+                                text: text,
+                                images: Array.from(candidates[i].querySelectorAll('img')).map(img => img.src)
+                            };
+                        }
+                    } catch(e) {}
                 }
             }
-            return null;
+            
+            if (bestCandidate) return bestCandidate;
+            
+            // 最終フォールバック: 全DOMからAIっぽいテキストブロックを探す
+            for (const doc of allDocs) {
+                try {
+                    // 長い段落テキストを持つ要素を検索 (AIの返答は通常長い)
+                    const paras = Array.from(doc.querySelectorAll('p, div'));
+                    for (let i = paras.length - 1; i >= 0; i--) {
+                        const el = paras[i];
+                        if (el.children.length > 0) continue; // 子要素があるなら親なので除外
+                        const text = (el.innerText || '').trim();
+                        if (text.length > 50 && text.length > bestLength) {
+                            bestLength = text.length;
+                            bestCandidate = { text, images: [] };
+                        }
+                    }
+                } catch(e) {}
+            }
+            
+            return bestCandidate;
         })()`;
     for (const ctx of cdp.contexts) {
         try {
             const res = await cdp.call("Runtime.evaluate", { expression: EXP, returnByValue: true, contextId: ctx.id });
-            if (res.result?.value?.text) return res.result.value;
+            if (res.result?.value?.text) {
+                logInteraction('DEBUG', `Response found in context ${ctx.id}, length: ${res.result.value.text.length}`);
+                return res.result.value;
+            }
         } catch (e) { }
     }
     return null;
