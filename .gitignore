@@ -15,3 +15,10 @@ restart_antigravity_debug.bat
 Thumbs.db
 tests/*.png
 dom_dump.json
+# Debug scripts (don't let AI execute these)
+scan_frames.js
+check_response.js
+dump_context.js
+debug_panel.js
+pr2.diff
+pr2_diff.txt

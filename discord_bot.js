@@ -133,14 +133,23 @@ async function discoverCDP() {
                 console.log(` - ${t.type}: ${t.title || t.url} (${t.webSocketDebuggerUrl})`);
             }
 
-            // Priority 1: Target that is NOT Launchpad and looks like a project window
+            // Priority 0: "Manager" ターゲット = Open Agent Manager (Cascade チャット UI)
             let target = list.find(t =>
                 t.type === 'page' &&
                 t.webSocketDebuggerUrl &&
-                !t.title.includes('Launchpad') &&
-                !t.url.includes('workbench-jetski-agent') &&
-                (t.url.includes('workbench') || t.title.includes('Antigravity') || t.title.includes('Cascade'))
+                t.title === 'Manager'
             );
+
+            // Priority 1: Target that is NOT Launchpad and looks like a project window
+            if (!target) {
+                target = list.find(t =>
+                    t.type === 'page' &&
+                    t.webSocketDebuggerUrl &&
+                    !t.title.includes('Launchpad') &&
+                    !t.url.includes('workbench-jetski-agent') &&
+                    (t.url.includes('workbench') || t.title.includes('Antigravity') || t.title.includes('Cascade'))
+                );
+            }
 
             // Priority 2: Any workbench/project target even if title is weird
             if (!target) {
@@ -170,6 +179,7 @@ async function discoverCDP() {
     throw new Error("CDP not found.");
 }
 
+
 async function connectCDP(url) {
     const ws = new WebSocket(url);
     await new Promise((resolve, reject) => {
@@ -189,7 +199,10 @@ async function connectCDP(url) {
                 pending.delete(data.id);
                 if (data.error) reject(data.error); else resolve(data.result);
             }
-            if (data.method === 'Runtime.executionContextCreated') contexts.push(data.params.context);
+            if (data.method === 'Runtime.executionContextCreated') {
+                const ctx = data.params.context;
+                if (!contexts.find(c => c.id === ctx.id)) contexts.push(ctx);
+            }
             if (data.method === 'Runtime.executionContextDestroyed') {
                 const idx = contexts.findIndex(c => c.id === data.params.executionContextId);
                 if (idx !== -1) contexts.splice(idx, 1);
@@ -213,13 +226,38 @@ async function connectCDP(url) {
         }
     });
 
+    // コンテキストを動的に取得するヘルパー
+    // イベントで収集したものが空の場合、executionContextDescriptions でフォールバック
+    const getContexts = async () => {
+        if (contexts.length > 0) return contexts;
+        try {
+            const res = await call("Runtime.executionContextDescriptions", {});
+            const descs = res?.executionContextDescriptions || [];
+            console.log(`[CDP] Dynamic context fetch: ${descs.length} contexts found.`);
+            for (const ctx of descs) {
+                if (!contexts.find(c => c.id === ctx.id)) contexts.push(ctx);
+            }
+        } catch (e) {
+            console.log(`[CDP] executionContextDescriptions failed: ${e.message}`);
+        }
+        return contexts;
+    };
+
     await call("Runtime.enable", {});
     await call("Runtime.disable", {}); // Toggle to force re-emission of events
     await call("Runtime.enable", {});
-    await new Promise(r => setTimeout(r, 1000)); // Wait for context events
+    // Target.setDiscoverTargets を有効化 → Target.getTargets で全ターゲット（Manager含む）が見えるようになる
+    try { await call("Target.setDiscoverTargets", { discover: true }); } catch (e) { }
+    await new Promise(r => setTimeout(r, 1500)); // Wait for context events
+
+    // イベントで取れていない場合は動的取得を試みる
+    if (contexts.length === 0) {
+        await getContexts();
+    }
+
     console.log(`[CDP] Initialized with ${contexts.length} contexts.`);
     logInteraction('CDP', `Connected to target: ${url}`);
-    return { ws, call, contexts };
+    return { ws, call, contexts, getContexts };
 }
 
 async function ensureCDP() {
@@ -229,6 +267,38 @@ async function ensureCDP() {
         cdpConnection = await connectCDP(url);
         return cdpConnection;
     } catch (e) { return null; }
+}
+
+// --- CDP ユーティリティ: 全コンテキストで式を評価する共通ヘルパー ---
+// コンテキストが0の場合は動的取得を試み、それでも0ならデフォルトコンテキストで実行
+async function evalInAllContexts(cdp, expression, opts = {}) {
+    const { returnByValue = true, awaitPromise = false, stopOnSuccess = true, successCheck = (v) => v !== null && v !== undefined && v !== false } = opts;
+
+    // まずコンテキストを最新状態にする
+    let contexts = await cdp.getContexts();
+
+    // まだ空なら諦めてデフォルトコンテキスト（contextId指定なし）で試す
+    if (contexts.length === 0) {
+        console.log('[evalInAllContexts] No contexts found, trying default context...');
+        try {
+            const res = await cdp.call("Runtime.evaluate", { expression, returnByValue, awaitPromise });
+            return [{ value: res.result?.value, contextId: 'default' }];
+        } catch (e) {
+            console.log(`[evalInAllContexts] Default context error: ${e.message}`);
+            return [];
+        }
+    }
+
+    const results = [];
+    for (const ctx of contexts) {
+        try {
+            const res = await cdp.call("Runtime.evaluate", { expression, returnByValue, awaitPromise, contextId: ctx.id });
+            const value = res.result?.value;
+            results.push({ value, contextId: ctx.id, contextUrl: ctx.url || ctx.name || '' });
+            if (stopOnSuccess && successCheck(value)) break;
+        } catch (e) { /* continue */ }
+    }
+    return results;
 }
 
 async function ensureWatchDir() {
@@ -282,110 +352,267 @@ async function ensureWatchDir() {
 }
 
 // --- DOM SCRIPTS ---
-async function injectMessage(cdp, text) {
-    const safeText = JSON.stringify(text);
-    const EXP = `(async () => {
-        const SELECTORS = ${JSON.stringify(SELECTORS)};
-        
-        // Helper to check if button has sending icon
-        function isSubmitButton(btn) {
-            if (btn.disabled || btn.offsetWidth === 0) return false;
-            // Check SVG classes
-            const svg = btn.querySelector('svg');
-            if (svg) {
-                const cls = (svg.getAttribute('class') || '') + ' ' + (btn.getAttribute('class') || '');
-                if (SELECTORS.SUBMIT_BUTTON_SVG_CLASSES.some(c => cls.includes(c))) return true;
-                // Also check for specific path d or other attributes if needed
+
+// Manager ターゲット（Cascade チャット UI）に直接メッセージを送信するヘルパー
+async function injectMessageToManagerTarget(cdp, msg) {
+    let managerWsUrl = null;
+    try {
+        const targets = await cdp.call("Target.getTargets");
+        const manager = (targets.targetInfos || []).find(t =>
+            t.type === 'page' && t.title.includes('Antigravity') && !t.title.includes('Launchpad')
+        );
+        if (manager?.targetId) managerWsUrl = `ws://127.0.0.1:9222/devtools/page/${manager.targetId}`;
+    } catch (e) { }
+
+    if (!managerWsUrl) {
+        try {
+            const list = await new Promise((resolve) => {
+                const http = require('http');
+                http.get('http://127.0.0.1:9222/json/list', res => {
+                    let data = '';
+                    res.on('data', chunk => data += chunk);
+                    res.on('end', () => resolve(JSON.parse(data)));
+                }).on('error', () => resolve([]));
+            });
+            const manager = list.find(t => t.type === 'page' && t.title.includes('Antigravity') && !t.title.includes('Launchpad'));
+            if (manager) managerWsUrl = manager.webSocketDebuggerUrl;
+        } catch (e) { }
+    }
+
+    if (!managerWsUrl) return null;
+
+    const safeText = JSON.stringify(msg);
+
+    return new Promise((resolve) => {
+        const ws = new WebSocket(managerWsUrl);
+        const timeout = setTimeout(() => { ws.close(); resolve(null); }, 8000);
+
+        ws.on('open', async () => {
+            let id = 1;
+            const pending = new Map();
+            ws.on('message', (message) => {
+                try {
+                    const data = JSON.parse(message);
+                    if (data.id !== undefined && pending.has(data.id)) {
+                        const { resolve } = pending.get(data.id);
+                        pending.delete(data.id);
+                        resolve(data.result);
+                    }
+                } catch (e) { }
+            });
+            const call = (method, params = {}) => new Promise((res) => {
+                const curId = id++;
+                pending.set(curId, { resolve: res });
+                ws.send(JSON.stringify({ id: curId, method, params }));
+                setTimeout(() => { pending.delete(curId); res(null); }, 5000);
+            });
+
+            const EXP = `(async () => {
+                const shadowQuery = (sel, root) => {
+                    const res = [];
+                    try { for (const el of root.querySelectorAll(sel)) res.push(el); } catch(e){}
+                    try {
+                        for (const el of root.querySelectorAll('*')) {
+                            if (el.shadowRoot) res.push(...shadowQuery(sel, el.shadowRoot));
+                            if (el.contentDocument) res.push(...shadowQuery(sel, el.contentDocument));
+                        }
+                    } catch(e){}
+                    return res;
+                };
+
+                const ext = [
+                    'div[contenteditable="true"][data-lexical-editor="true"]',
+                    'textarea[placeholder*="Ask"]', 'textarea[placeholder*="Message"]', 'textarea[placeholder*="Chat"]',
+                    'div[contenteditable="true"][aria-label*="Chat"]', '#chat-input', '.chat-input', 'textarea'
+                ];
+
+                let editor = null;
+                for (const sel of ext) {
+                    const els = shadowQuery(sel, document);
+                    if (els.length > 0) {
+                        editor = els[0];
+                        break;
+                    }
+                }
+
+                if (!editor) return { ok: false, error: "Manager target found, but no editor found in it" };
+
+                if (editor.isContentEditable) {
+                    editor.focus();
+                    document.execCommand('insertText', false, ${safeText});
+                    
+                    editor.dispatchEvent(new InputEvent("input", { bubbles: true }));
+                    editor.dispatchEvent(new Event("change", { bubbles: true }));
+                } else {
+                    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+                    if (setter) setter.call(editor, ${safeText});
+                    else editor.value = ${safeText};
+                }
+
+                editor.dispatchEvent(new Event("input", { bubbles: true }));
+                editor.dispatchEvent(new Event("change", { bubbles: true }));
+                editor.focus();
+
+                await new Promise(r => setTimeout(r, 100));
+
+                const btns = shadowQuery('button', document);
+                const submit = btns.find(btn => {
+                    if (btn.offsetWidth === 0) return false;
+                    const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+                    const txt = (btn.innerText || '').toLowerCase();
+                    return aria.includes('send') || aria.includes('submit') || txt.includes('send') || txt.includes('submit') || (btn.querySelector('svg') && btn.innerHTML.includes('lucide-send'));
+                });
+
+                if (submit) {
+                    submit.click();
+                    return { ok: true, method: "click" };
+                }
+
+                editor.dispatchEvent(new KeyboardEvent("keydown", { bubbles:true, key:"Enter", code:"Enter" }));
+                return { ok: true, method: "enter" };
+            })()`;
+
+            try {
+                await call('Runtime.enable');
+                const res = await call('Runtime.evaluate', { expression: EXP, returnByValue: true, awaitPromise: true });
+                const val = res?.result?.value;
+                clearTimeout(timeout);
+                ws.close();
+                resolve((val && val.ok) ? { ok: true, method: val.method } : { ok: false, error: val?.error || "Unknown evaluate error" });
+            } catch (e) {
+                clearTimeout(timeout);
+                ws.close();
+                resolve({ ok: false, error: `evaluate try block catch: ${e.message}` });
             }
-            // Check text
-            const txt = (btn.innerText || '').trim().toLowerCase();
-            if (['send', 'run'].includes(txt)) return true;
-            
-            return false;
+        });
+
+        ws.on('error', (e) => {
+            clearTimeout(timeout);
+            resolve({ ok: false, error: `WS error: ${e.message}` });
+        });
+    });
+}
+
+async function injectMessage(cdp, msg) {
+    // まず Manager ターゲット（チャットUI専用）への直結を試みる
+    const managerRes = await injectMessageToManagerTarget(cdp, msg);
+    if (managerRes?.ok) {
+        logInteraction('INJECT', `Sent: ${msg.substring(0, 50).replace(/\\n/g, ' ')}... (Manager Target)`);
+        return { success: true };
+    } else {
+        console.log(`[injectMessage] Manager target failed:`, managerRes?.error || "Could not find managerWsUrl (Panel closed?)");
+    }
+
+    const safeText = JSON.stringify(msg);
+    const EXP = `(async () => {
+        const shadowQuery = (sel, root) => {
+            const res = [];
+            try { for (const el of root.querySelectorAll(sel)) res.push(el); } catch(e){}
+            try {
+                for (const el of root.querySelectorAll('*')) {
+                    if (el.shadowRoot) res.push(...shadowQuery(sel, el.shadowRoot));
+                    if (el.contentDocument) res.push(...shadowQuery(sel, el.contentDocument));
+                }
+            } catch(e){}
+            return res;
+        };
+
+        const ext = [
+            'div[contenteditable="true"][data-lexical-editor="true"]',
+            'textarea[placeholder*="Ask"]', 'textarea[placeholder*="Message"]', 'textarea[placeholder*="Chat"]',
+            'div[contenteditable="true"][aria-label*="Chat"]', '#chat-input', '.chat-input', 'textarea'
+        ];
+
+        let editor = null;
+        for (const sel of ext) {
+            const els = shadowQuery(sel, document);
+            if (els.length > 0) {
+                editor = els[0];
+                break;
+            }
         }
 
-        const doc = document;
-        
-        // 1. Find Editor
-        // Prioritize the role=textbox that is NOT xterm
-        const editors = Array.from(doc.querySelectorAll(SELECTORS.CHAT_INPUT));
-        // Filter out hidden ones or those in xterm if selector leaked
-        const validEditors = editors.filter(el => el.offsetParent !== null);
-        
-        const editor = validEditors.at(-1); // Use the last one (usually bottom of chat)
         if (!editor) return { ok: false, error: "No editor found in this context" };
 
-        // 2. Focus and Insert Text
-        editor.focus();
-        
-        // Try execCommand first
-        let inserted = doc.execCommand("insertText", false, ${safeText});
-        
-        // Fallback
-        if (!inserted) {
-            editor.textContent = ${safeText};
-            editor.dispatchEvent(new InputEvent("beforeinput", { bubbles:true, inputType:"insertText", data: ${safeText} }));
-            editor.dispatchEvent(new InputEvent("input", { bubbles:true, inputType:"insertText", data: ${safeText} }));
+        if (editor.isContentEditable) {
+            editor.focus();
+            document.execCommand('insertText', false, ${safeText});
+            editor.dispatchEvent(new InputEvent("input", { bubbles: true }));
+            editor.dispatchEvent(new Event("change", { bubbles: true }));
+        } else {
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+            if (setter) setter.call(editor, ${safeText});
+            else editor.value = ${safeText};
         }
-        editor.dispatchEvent(new Event('input', { bubbles: true })); // Force update
-        
-        await new Promise(r => setTimeout(r, 200));
 
-        // 3. Click Submit
-        // Find button near the editor or global submit button
-        // The submit button is usually a sibling or cousin of the editor
-        const allButtons = Array.from(doc.querySelectorAll(SELECTORS.SUBMIT_BUTTON_CONTAINER));
-        const submit = allButtons.find(isSubmitButton);
-        
+        editor.dispatchEvent(new Event("input", { bubbles: true }));
+        editor.dispatchEvent(new Event("change", { bubbles: true }));
+        editor.focus();
+
+        await new Promise(r => setTimeout(r, 100));
+
+        const btns = shadowQuery('button', document);
+        const submit = btns.find(btn => {
+            if (btn.offsetWidth === 0) return false;
+            const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+            const txt = (btn.innerText || '').toLowerCase();
+            return aria.includes('send') || aria.includes('submit') || txt.includes('send') || txt.includes('submit') || (btn.querySelector('svg') && btn.innerHTML.includes('lucide-send'));
+        });
+
         if (submit) {
-             submit.click();
-             return { ok: true, method: "click" };
+            submit.click();
+            return { ok: true, method: "click" };
         }
-        
-        // Fallback: Enter key
+
         editor.dispatchEvent(new KeyboardEvent("keydown", { bubbles:true, key:"Enter", code:"Enter" }));
         return { ok: true, method: "enter" };
     })()`;
 
     // Strategy: Prioritize context that looks like cascade-panel
-    const targetContexts = cdp.contexts.filter(c =>
-        (c.url && c.url.includes(SELECTORS.CONTEXT_URL_KEYWORD)) ||
-        (c.name && c.name.includes('Extension')) // Fallback
+    const allContexts = cdp.contexts || [];
+    const targetContexts = allContexts.filter(c =>
+        (c.url && c.url.includes('cascade')) ||
+        (c.name && c.name.includes('Extension'))
     );
 
     // If no specific context found, try all
-    const contextsToTry = targetContexts.length > 0 ? targetContexts : cdp.contexts;
-
-    console.log(`Injecting message. Priority contexts: ${targetContexts.length}, Total: ${cdp.contexts.length}`);
+    const contextsToTry = targetContexts.length > 0 ? targetContexts : allContexts;
 
     for (const ctx of contextsToTry) {
         try {
             const res = await cdp.call("Runtime.evaluate", { expression: EXP, returnByValue: true, awaitPromise: true, contextId: ctx.id });
             if (res.result?.value?.ok) {
-                logInteraction('INJECT', `Sent: ${text} (Context: ${ctx.id})`);
+                logInteraction('INJECT', `Sent: ${msg.substring(0, 50)}... (Priority Context: ${ctx.id})`);
                 return res.result.value;
             }
-            // console.log(`[Injection Fail] Context ${ctx.id}: ${res.result?.value?.error}`);
+        } catch (e) { }
+    }
+
+    const otherContexts = allContexts.filter(c => !contextsToTry.includes(c));
+    for (const ctx of otherContexts) {
+        try {
+            const res = await cdp.call("Runtime.evaluate", { expression: EXP, returnByValue: true, awaitPromise: true, contextId: ctx.id });
+            if (res.result?.value?.ok) {
+                logInteraction('INJECT', `Sent: ${msg.substring(0, 50)}... (Fallback Context: ${ctx.id})`);
+                return res.result.value;
+            }
+        } catch (e) { }
+    }
+
+    // 最終フォールバック: コンテキストなし（デフォルト）で試す
+    if (allContexts.length === 0) {
+        try {
+            const res = await cdp.call("Runtime.evaluate", { expression: EXP, returnByValue: true, awaitPromise: true });
+            if (res.result?.value?.ok) {
+                logInteraction('INJECT', `Sent: ${msg.substring(0, 50)}... (Default Context)`);
+                return res.result.value;
+            }
         } catch (e) {
-            // console.log(`[Injection Error] Context ${ctx.id}: ${e.message}`);
+            console.log(`[Injection] Default context error: ${e.message}`);
         }
     }
 
-    // Fallback: Try ALL contexts if priority ones failed
-    if (targetContexts.length > 0) {
-        const otherContexts = cdp.contexts.filter(c => !targetContexts.includes(c));
-        for (const ctx of otherContexts) {
-            try {
-                const res = await cdp.call("Runtime.evaluate", { expression: EXP, returnByValue: true, awaitPromise: true, contextId: ctx.id });
-                if (res.result?.value?.ok) {
-                    logInteraction('INJECT', `Sent: ${text} (Fallback Context: ${ctx.id})`);
-                    return res.result.value;
-                }
-            } catch (e) { }
-        }
-    }
-
-    return { ok: false, error: `Injection failed. Tried ${cdp.contexts.length} contexts.` };
+    return { ok: false, error: "Injection failed. Chat panel might be closed." };
 }
 
 async function checkIsGenerating(cdp) {
@@ -417,6 +644,13 @@ async function checkIsGenerating(cdp) {
     for (const ctx of cdp.contexts) {
         try {
             const res = await cdp.call("Runtime.evaluate", { expression: EXP, returnByValue: true, contextId: ctx.id });
+            if (res.result?.value === true) return true;
+        } catch (e) { }
+    }
+    // コンテキストが0の場合はデフォルトコンテキストで試す
+    if (cdp.contexts.length === 0) {
+        try {
+            const res = await cdp.call("Runtime.evaluate", { expression: EXP, returnByValue: true });
             if (res.result?.value === true) return true;
         } catch (e) { }
     }
@@ -456,8 +690,19 @@ async function checkApprovalRequired(cdp) {
             if (!root) return;
             
             // Restrict anchor search to interactive elements
+            // エディタの差分 UI (.cascade-bar, .part.titlebar) は除外
+            function isEditorUI(el) {
+                return !!(el.closest && (
+                    el.closest('.cascade-bar') ||
+                    el.closest('.part.titlebar') ||
+                    el.closest('.editor-instance') ||
+                    el.closest('.monaco-editor') ||
+                    el.closest('.diff-editor')
+                ));
+            }
             const potentialAnchors = Array.from(root.querySelectorAll ? root.querySelectorAll('button, [role="button"], .cursor-pointer') : []).filter(el => {
                 if (el.offsetWidth === 0 || el.offsetHeight === 0) return false;
+                if (isEditorUI(el)) return false; // エディタ UI を除外
                 const txt = (el.innerText || '').trim().toLowerCase();
                 // Match anchor keywords
                 return anchorKeywords.some(kw => txt === kw || txt.startsWith(kw + ' '));
@@ -541,6 +786,13 @@ async function checkApprovalRequired(cdp) {
             if (res.result?.value?.required) return res.result.value;
         } catch (e) { }
     }
+    // コンテキストが0の場合はデフォルトコンテキストで試す
+    if (cdp.contexts.length === 0) {
+        try {
+            const res = await cdp.call("Runtime.evaluate", { expression: EXP, returnByValue: true });
+            if (res.result?.value?.required) return res.result.value;
+        } catch (e) { }
+    }
     return null;
 }
 
@@ -570,9 +822,15 @@ async function clickApproval(cdp, allow) {
         '  }' +
         '  return combined.indexOf(kw) !== -1;' +
         '}' +
+        // エディタ UI を除外するヘルパー
+        'function isEditorUI(el) {' +
+        '  return !!(el.closest && (el.closest(".cascade-bar") || el.closest(".part.titlebar") || el.closest(".monaco-editor") || el.closest(".diff-editor") || el.closest(".editor-instance")));' +
+        '}' +
         // 全ボタンをスキャンしてログに記録
         'var allButtons = Array.from(doc.body ? doc.body.querySelectorAll("button, [role=\\"button\\"], .cursor-pointer") : []);' +
-        'log.push("Total buttons found: " + allButtons.length);' +
+        // エディタ UI を除外
+        'allButtons = allButtons.filter(function(el) { return !isEditorUI(el); });' +
+        'log.push("Total buttons found (excl editor): " + allButtons.length);' +
         // まずキャンセルボタン(アンカー)を探す
         'var anchors = allButtons.filter(function(el) {' +
         '  if (el.offsetWidth === 0) return false;' +
@@ -646,83 +904,268 @@ async function clickApproval(cdp, allow) {
 }
 
 
+// Manager ターゲット（Cascade チャット UI）から AI 応答を取得するヘルパー
+async function getResponseFromManagerTarget(cdp) {
+    // Target.getTargets で Manager を探す
+    let managerWsUrl = null;
+    try {
+        const targets = await cdp.call("Target.getTargets");
+        const allTargets = targets.targetInfos || [];
+        // 全ターゲットをログ（デバッグ用）
+        console.log(`[Manager] Target.getTargets: ${allTargets.length} targets`);
+        for (const t of allTargets) {
+            console.log(`  - type=${t.type} title="${t.title}" id=${t.targetId}`);
+        }
+        const manager = allTargets.find(t =>
+            t.type === 'page' &&
+            (t.title === 'Manager' || t.title.includes('jetski') || t.url.includes('jetski')) && !t.title.includes('Launchpad')
+        );
+        if (manager?.targetId) {
+            managerWsUrl = `ws://127.0.0.1:9222/devtools/page/${manager.targetId}`;
+            console.log(`[getLastResponse] Found Manager target: ${manager.targetId}`);
+        }
+    } catch (e) {
+        console.log(`[getLastResponse] Target.getTargets failed: ${e.message}`);
+    }
+
+    // /json/list でも探す（フォールバック）
+    if (!managerWsUrl) {
+        try {
+            const list = await getJson('http://127.0.0.1:9222/json/list');
+            console.log(`[Manager] /json/list: ${list.length} entries`);
+            for (const t of list) console.log(`  - type=${t.type} title="${t.title}"`);
+            const manager = list.find(t =>
+                t.type === 'page' &&
+                (t.title === 'Manager' || t.title.includes('jetski') || t.url.includes('jetski')) && !t.title.includes('Launchpad')
+            );
+            if (manager) {
+                managerWsUrl = manager.webSocketDebuggerUrl;
+                console.log(`[getLastResponse] Found Manager in /json/list`);
+            }
+        } catch (e) { }
+    }
+
+    if (!managerWsUrl) return null;
+
+    // Manager に一時接続して DOM スキャン
+    return new Promise((resolve) => {
+        const ws = new WebSocket(managerWsUrl);
+        const timeout = setTimeout(() => { ws.close(); resolve(null); }, 8000);
+
+        ws.on('open', async () => {
+            let id = 1;
+            const pending = new Map();
+            ws.on('message', (msg) => {
+                try {
+                    const data = JSON.parse(msg);
+                    if (data.id !== undefined && pending.has(data.id)) {
+                        const { resolve } = pending.get(data.id);
+                        pending.delete(data.id);
+                        resolve(data.result);
+                    }
+                } catch (e) { }
+            });
+            const call = (method, params = {}) => new Promise((res) => {
+                const curId = id++;
+                pending.set(curId, { resolve: res });
+                ws.send(JSON.stringify({ id: curId, method, params }));
+                setTimeout(() => { pending.delete(curId); res(null); }, 5000);
+            });
+
+            const SCAN_EXP = `(() => {
+                const shadowQuery = (selector, root) => {
+                    const results = [];
+                    try { const direct = root.querySelectorAll(selector); for (const el of direct) results.push(el); } catch(e){}
+                    try {
+                        const all = root.querySelectorAll('*');
+                        for (const el of all) {
+                            if (el.shadowRoot) results.push(...shadowQuery(selector, el.shadowRoot));
+                            if (el.contentDocument) results.push(...shadowQuery(selector, el.contentDocument));
+                        }
+                    } catch(e){}
+                    return results;
+                };
+
+                const selectors = [
+                    '[data-message-role="assistant"]', '[data-testid*="assistant"]', '[data-role="assistant"]',
+                    '.prose', '.markdown-body', '.markdown', '.assistant-message', '.message-content',
+                    '[class*="assistant"][class*="message"]', '[class*="ai-message"]', '[class*="response"]',
+                    '.chat-message-assistant', '.chat-response'
+                ];
+                const excludePatterns = [
+                    /^open agent manager$/i, /^antigravity/i, /^new chat$/i,
+                    /^planning$/i, /^fast$/i, /^run$/i, /^cancel$/i
+                ];
+                function isExcluded(t) { return excludePatterns.some(p => p.test(t.trim())); }
+                
+                let bestText = null, bestLen = 0, bestImages = [];
+                
+                // Cascade Panel custom extraction logic First
+                try {
+                    const convList = shadowQuery('#conversation .flex.w-full.grow.flex-col > .mx-auto.w-full', document);
+                    if (convList.length > 0 && convList[0].children.length > 0) {
+                        // Get the last message block
+                        const lastMsg = convList[0].children[convList[0].children.length - 1];
+                        // Inside this block, avoid the "Thought for X" container which is often inside a max-h-0 before opening 
+                        // Actually, the main content is often in .leading-relaxed or .animate-markdown
+                        const contentNodes = lastMsg.querySelectorAll('.leading-relaxed, .animate-markdown, p:not(.cursor-pointer)');
+                        let combinedText = '';
+                        for(let c of contentNodes) {
+                           // exclude thought block if possible. Usually thought blocks are inside a div with max-h-0 or a span with cursor-pointer
+                           if(c.closest('.max-h-0') || c.closest('details') || c.classList.contains('cursor-pointer') || c.closest('.cursor-pointer')) continue;
+                           let t = c.innerText.trim();
+                           if(t && !isExcluded(t) && !combinedText.includes(t)) combinedText += t + '\\n\\n';
+                        }
+                        
+                        // If we didn't get good content, fallback to the entire text but try to strip 'Thought for X'
+                        if(combinedText.trim().length === 0) {
+                            let raw = lastMsg.innerText;
+                            // Regex to remove "Thought for X... " block if it's there
+                            raw = raw.replace(/Thought for .*?(s|m)\\n[\\s\\S]*?(?=\\n\\n|\\n[A-Z]|$)/i, '');
+                            combinedText = raw.trim();
+                        }
+                        
+                        if(combinedText.length > 30 && !isExcluded(combinedText)) {
+                            bestText = combinedText.trim();
+                            bestLen = bestText.length;
+                            bestImages = Array.from(lastMsg.querySelectorAll('img')).map(img => img.src);
+                        }
+                    }
+                } catch(e) {}
+
+                // Fallback to original selector search
+                if (!bestText) {
+                    for (const sel of selectors) {
+                        try {
+                            const els = shadowQuery(sel, document);
+                            for (let i = els.length - 1; i >= 0; i--) {
+                                const text = (els[i].innerText || '').trim();
+                                if (text.length >= 30 && !isExcluded(text) && text.length > bestLen) {
+                                    bestLen = text.length;
+                                    bestText = text;
+                                    bestImages = Array.from(els[i].querySelectorAll('img')).map(img => img.src);
+                                }
+                            }
+                        } catch(e) {}
+                    }
+                }
+                return bestText ? { text: bestText, images: bestImages } : null;
+            })()`;
+
+            try {
+                await call('Runtime.enable');
+                const res = await call('Runtime.evaluate', { expression: SCAN_EXP, returnByValue: true });
+                const val = res?.result?.value;
+                clearTimeout(timeout);
+                ws.close();
+                resolve(val?.text ? val : null);
+            } catch (e) {
+                clearTimeout(timeout);
+                ws.close();
+                resolve(null);
+            }
+        });
+
+        ws.on('error', () => { clearTimeout(timeout); resolve(null); });
+    });
+}
+
 async function getLastResponse(cdp) {
+    // 1. Manager ターゲット（Cascade チャット UI）を最優先で試す
+    const managerResult = await getResponseFromManagerTarget(cdp);
+    if (managerResult) {
+        logInteraction('DEBUG', `[Manager] Response found, length: ${managerResult.text.length}`);
+        return { text: managerResult.text, images: managerResult.images || [] };
+    }
+
+    // 2. 現在の CDP 接続でフォールバックスキャン
     const EXP = `(() => {
-            // チャットUIのiframeを優先して探す（cascade-panel を含むもの）
-            const allDocs = [];
-            const iframes = document.querySelectorAll('iframe');
-            
-            // まずcascade-panelのiframeを優先
-            for (let i = 0; i < iframes.length; i++) {
-                if (iframes[i].src && iframes[i].src.includes('cascade-panel')) {
-                    try { if (iframes[i].contentDocument) allDocs.push(iframes[i].contentDocument); } catch(e) {}
+        const shadowQuery = (selector, root) => {
+            const results = [];
+            try { const direct = root.querySelectorAll(selector); for (const el of direct) results.push(el); } catch(e){}
+            try {
+                const all = root.querySelectorAll('*');
+                for (const el of all) {
+                    if (el.shadowRoot) results.push(...shadowQuery(selector, el.shadowRoot));
                 }
-            }
-            // 次に他のiframe、最後にメインドキュメント
-            for (let i = 0; i < iframes.length; i++) {
-                if (!iframes[i].src || !iframes[i].src.includes('cascade-panel')) {
-                    try { if (iframes[i].contentDocument) allDocs.push(iframes[i].contentDocument); } catch(e) {}
+            } catch(e){}
+            return results;
+        };
+
+        // メインドキュメントと、Shadow DOM 内を含むすべての iframe の中のドキュメントを収集
+        const allDocs = [document];
+        const allIframes = shadowQuery('iframe', document);
+        for (const frame of allIframes) {
+            try {
+                if (frame.contentDocument) {
+                    allDocs.push(frame.contentDocument);
                 }
-            }
-            allDocs.push(document);
-            
-            // AI応答に特化したセレクター（広すぎるものは除外）
-            const selectors = [
-                '[data-message-role="assistant"]',
-                '[data-testid*="assistant"]',
-                '[data-testid*="message"]',
-                '.prose',
-                '.markdown-body',
-                '.assistant-message',
-                '.message-content'
-            ];
-            
-            for (const doc of allDocs) {
-                let candidates = [];
+            } catch(e) {}
+        }
+
+        const selectors = [
+            '[data-message-role="assistant"]', '[data-testid*="assistant"]', '[data-role="assistant"]',
+            '.prose', '.markdown-body', '.markdown', '.assistant-message', '.message-content',
+            '[class*="assistant"][class*="message"]', '[class*="ai-message"]',
+            '.chat-message-assistant', '.chat-response'
+        ];
+        const excludePatterns = [
+            /^open agent manager$/i, /^antigravity/i, /^new chat$/i, /^planning$/i, /^fast$/i
+        ];
+        function isExcluded(t) { return excludePatterns.some(p => p.test(t.trim())); }
+        let bestText = null, bestLen = 0, bestImages = [];
+        
+        for (const doc of allDocs) {
+            try {
+                const convList = shadowQuery('#conversation .flex.w-full.grow.flex-col > .mx-auto.w-full', doc);
+                if (convList.length > 0 && convList[0].children.length > 0) {
+                    const lastMsg = convList[0].children[convList[0].children.length - 1];
+                    const contentNodes = lastMsg.querySelectorAll('.leading-relaxed, .animate-markdown, p:not(.cursor-pointer)');
+                    let combinedText = '';
+                    for(let c of contentNodes) {
+                       if(c.closest('.max-h-0') || c.closest('details') || c.classList.contains('cursor-pointer') || c.closest('.cursor-pointer')) continue;
+                       let t = c.innerText.trim();
+                       if(t && !isExcluded(t) && !combinedText.includes(t)) combinedText += t + '\\n\\n';
+                    }
+                    if(combinedText.trim().length === 0) {
+                        let raw = lastMsg.innerText;
+                        raw = raw.replace(/Thought for .*?(s|m)\\n[\\s\\S]*?(?=\\n\\n|\\n[A-Z]|$)/i, '');
+                        combinedText = raw.trim();
+                    }
+                    if(combinedText.length > 30 && !isExcluded(combinedText)) {
+                        bestText = combinedText.trim();
+                        bestLen = bestText.length;
+                        bestImages = Array.from(lastMsg.querySelectorAll('img')).map(img => img.src);
+                    }
+                }
+            } catch(e) {}
+
+            if (!bestText) {
                 for (const sel of selectors) {
                     try {
-                        const found = Array.from(doc.querySelectorAll(sel));
-                        if (found.length > 0) candidates = candidates.concat(found);
-                    } catch(e) {}
-                }
-                
-                // 重複排除
-                candidates = [...new Set(candidates)];
-                if (candidates.length === 0) continue;
-                
-                // 最後の要素（会話の最新応答）からテキストを取得
-                for (let i = candidates.length - 1; i >= 0; i--) {
-                    try {
-                        const text = (candidates[i].innerText || '').trim();
-                        if (text.length > 0) {
-                            return {
-                                text: text,
-                                images: Array.from(candidates[i].querySelectorAll('img')).map(img => img.src)
-                            };
+                        const els = shadowQuery(sel, doc);
+                        for (let i = els.length - 1; i >= 0; i--) {
+                            const text = (els[i].innerText || '').trim();
+                            if (text.length >= 50 && !isExcluded(text) && text.length > bestLen) {
+                                bestLen = text.length;
+                                bestText = text;
+                                bestImages = Array.from(els[i].querySelectorAll('img')).map(img => img.src);
+                            }
                         }
                     } catch(e) {}
                 }
             }
-            
-            return null;
-        })()`;
+        }
+        return bestText ? { text: bestText, images: bestImages, _debug: { iframeCount: allIframes.length, docsChecked: allDocs.length } } : { text: null, _debug: { iframeCount: allIframes.length, docsChecked: allDocs.length } };
+    })()`;
 
-    // injectMessage と同様に cascade-panel コンテキストを優先
-    const targetContexts = cdp.contexts.filter(c =>
-        (c.url && c.url.includes('cascade-panel')) ||
-        (c.name && c.name.includes('Extension'))
-    );
-    const otherContexts = cdp.contexts.filter(c => !targetContexts.includes(c));
-    const contextsToTry = [...targetContexts, ...otherContexts];
-
-    for (const ctx of contextsToTry) {
-        try {
-            const res = await cdp.call("Runtime.evaluate", { expression: EXP, returnByValue: true, contextId: ctx.id });
-            if (res.result?.value?.text) {
-                logInteraction('DEBUG', `Response found in context ${ctx.id} (${ctx.url || ctx.name || 'unnamed'}), length: ${res.result.value.text.length}`);
-                return res.result.value;
-            }
-        } catch (e) { }
+    const results = await evalInAllContexts(cdp, EXP, { stopOnSuccess: true, successCheck: (v) => v?.text });
+    for (const { value: val, contextId } of results) {
+        if (val?._debug) console.log(`[getLastResponse] Fallback ctx ${contextId}: iframes=${val._debug.iframeCount}`);
+        if (val?.text) {
+            logInteraction('DEBUG', `Response found in ctx ${contextId}, length: ${val.text.length}`);
+            return { text: val.text, images: val.images };
+        }
     }
     return null;
 }
@@ -1483,7 +1926,7 @@ client.on('messageCreate', async message => {
     }
 
     const res = await injectMessage(cdp, messageText);
-    if (res.ok) {
+    if (res.success) {
         await message.react('✅').catch(() => { });
         logInteraction('SUCCESS', `Message ${message.id} injected successfully.`);
         monitorAIResponse(message, cdp);
@@ -1501,7 +1944,86 @@ client.on('messageCreate', async message => {
         }
         await ensureWatchDir();
         console.log(`📂 Watching directory: ${WORKSPACE_ROOT}`);
-        client.login(process.env.DISCORD_BOT_TOKEN);
+
+        // ==========================================
+        // Local Test Mode (Bot <-> Antigravity test)
+        // ==========================================
+        if (process.argv.includes('--test')) {
+            console.log("=== RUNNING IN LOCAL TEST MODE ===");
+            try {
+                const discovered = await discoverCDP();
+                if (!discovered || !discovered.url) {
+                    console.error("Test Failed: Antigravity not found on debug port.");
+                    process.exit(1);
+                }
+                console.log(`Discovered Antigravity! URL: ${discovered.url}`);
+
+                const cdp = await connectCDP(discovered.url);
+                if (!cdp) throw new Error("Could not connect to CDP");
+                cdpConnection = cdp;
+
+                const testMsg = {
+                    author: { id: "test-user-id" },
+                    content: "Hello from local test mode! Please reply with 'Test successful'.",
+                    reply: async function (replyObj) {
+                        console.log("===============================");
+                        console.log("[SIMULATED DISCORD REPLY]:");
+                        console.log(replyObj);
+                        console.log("===============================");
+
+                        const mockReplyMsg = {
+                            content: replyObj.content,
+                            edit: async function (editObj) {
+                                console.log("[SIMULATED DISCORD EDIT]:", editObj);
+                                return this;
+                            },
+                            awaitMessageComponent: async () => {
+                                console.log("[SIMULATED DISCORD AWAITING BUTTON] -> Auto Approving in 2s...");
+                                await new Promise(r => setTimeout(r, 2000));
+                                return {
+                                    customId: 'approve_action',
+                                    user: { id: "test-user-id" },
+                                    deferUpdate: async () => console.log("[SIMULATED DISCORD BUTTON] Update deferred")
+                                };
+                            }
+                        };
+                        return mockReplyMsg;
+                    },
+                    channel: {
+                        sendTyping: () => console.log("[SIMULATED] -> Sending typing indicator..."),
+                        send: async (msg) => console.log("[SIMULATED DISCORD SEND]:", msg)
+                    }
+                };
+
+                // Add to queue
+                requestQueue.push({ originalMessage: testMsg });
+
+                // Inject message manually first (since messageCreate handler isn't running)
+                const res = await injectMessage(cdp, testMsg.content);
+                if (!res.success && !res.ok) {
+                    throw new Error("Local Test failed: injectMessage returned false/error. " + (res.error || ""));
+                }
+
+                console.log("Injection succeeded. Starting response monitor.");
+                // Process response
+                monitorAIResponse(testMsg, cdp);
+
+                // For testing wait a bit to ensure async polling finishes
+                await new Promise(r => setTimeout(r, 60000)); // wait up to 60 seconds
+
+                console.log("=== LOCAL TEST FINISHED ===");
+                process.exit(0);
+            } catch (e) {
+                console.error("Test Error:", e);
+                process.exit(1);
+            }
+        } else {
+            // Standard Discord login
+            client.login(process.env.DISCORD_BOT_TOKEN).catch(e => {
+                console.error('Failed to login:', e);
+                process.exit(1);
+            });
+        }
     } catch (e) {
         console.error('Fatal Error:', e);
         process.exit(1);
