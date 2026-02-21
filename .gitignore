@@ -15,6 +15,7 @@ restart_antigravity_debug.bat
 Thumbs.db
 tests/*.png
 dom_dump.json
+debug/
 
 # Ignore local workspace outputs, but keep placeholder files
 workspace/**
