@@ -411,14 +411,6 @@ async function checkIsGenerating(cdp) {
             for (const el of runningIndicators) {
                 if (el.offsetParent !== null) return true;
             }
-            
-            // 4. 承認ボタン（Approval Required表示中は生成中とみなす）
-            const approvalBtns = Array.from(doc.querySelectorAll('button, [role="button"]')).filter(btn => {
-                if (btn.offsetWidth === 0) return false;
-                const txt = (btn.innerText || '').toLowerCase().trim();
-                return txt.includes('allow this conversation') || txt.includes('always allow') || txt.includes('allow once');
-            });
-            if (approvalBtns.length > 0) return true;
         }
         return false;
     })()`;
