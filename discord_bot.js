@@ -1072,6 +1072,7 @@ function setupFileWatcher() {
 
 let requestQueue = [];
 let isMonitoring = false;
+let lastApprovalMessage = null; // Track the last sent approval text to avoid duplicates
 
 async function processQueue(cdp) {
     if (isMonitoring || requestQueue.length === 0) return;
@@ -1079,6 +1080,7 @@ async function processQueue(cdp) {
 
     const { originalMessage } = requestQueue.shift();
     let stableCount = 0;
+    isGenerating = true; // Use global state for logs/title
     lastApprovalMessage = null;
 
     // AIが生成を開始するまでの猶予期間
@@ -1147,6 +1149,7 @@ async function processQueue(cdp) {
                         for (let i = 1; i < chunks.length; i++) await originalMessage.channel.send(chunks[i]);
                     }
 
+                    isGenerating = false;
                     isMonitoring = false;
 
                     // 次のキューがあれば直ちに処理
@@ -1160,6 +1163,7 @@ async function processQueue(cdp) {
             setTimeout(poll, POLLING_INTERVAL);
         } catch (e) {
             console.error("Poll error:", e);
+            isGenerating = false;
             isMonitoring = false;
             setTimeout(() => processQueue(cdp), 1000);
         }
