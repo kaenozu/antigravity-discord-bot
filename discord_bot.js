@@ -398,12 +398,27 @@ async function checkIsGenerating(cdp) {
         }
 
         for (const doc of docs) {
-            // キャンセルボタンの存在で生成中かを判定
+            // 1. キャンセルボタン（AIがテキスト生成中）
             const cancel = doc.querySelector('[data-tooltip-id="input-send-button-cancel-tooltip"]');
             if (cancel && cancel.offsetParent !== null) return true;
-            // 送信中スピナーでも判定
+            
+            // 2. ツール実行中のスピナー・ローディング表示
             const spinner = doc.querySelector('[aria-label*="loading"], [aria-label*="Loading"], [class*="spinner"], [class*="loading"]');
             if (spinner && spinner.offsetParent !== null) return true;
+            
+            // 3. 「Running command」「Executing」などのツール実行中表示
+            const runningIndicators = doc.querySelectorAll('[class*="running"], [class*="executing"], [class*="pending"]');
+            for (const el of runningIndicators) {
+                if (el.offsetParent !== null) return true;
+            }
+            
+            // 4. 承認ボタン（Approval Required表示中は生成中とみなす）
+            const approvalBtns = Array.from(doc.querySelectorAll('button, [role="button"]')).filter(btn => {
+                if (btn.offsetWidth === 0) return false;
+                const txt = (btn.innerText || '').toLowerCase().trim();
+                return txt.includes('allow this conversation') || txt.includes('always allow') || txt.includes('allow once');
+            });
+            if (approvalBtns.length > 0) return true;
         }
         return false;
     })()`;
@@ -1196,7 +1211,7 @@ async function processQueue(cdp) {
             if (!generating) {
                 stableCount++;
                 if (stableCount % 5 === 0) logInteraction('DEBUG', `Waiting for generation to finish... (Stable: ${stableCount})`);
-                if (stableCount >= 2) { // 3 -> 2 to be slightly faster
+                if (stableCount >= 5) { // 5カウント（約10秒）以上安定してから応答を取得
                     const response = await getLastResponse(cdp);
                     if (response) {
                         logInteraction('SUCCESS', `Response found: ${response.text.substring(0, 50)}...`);
