@@ -1070,40 +1070,36 @@ function setupFileWatcher() {
     });
 }
 
-// --- MONITOR LOOP ---
-let lastApprovalMessage = null; // Track the last sent approval text to avoid duplicates
+let requestQueue = [];
+let isMonitoring = false;
 
-async function monitorAIResponse(originalMessage, cdp) {
-    if (isGenerating) return;
-    isGenerating = true;
+async function processQueue(cdp) {
+    if (isMonitoring || requestQueue.length === 0) return;
+    isMonitoring = true;
+
+    const { originalMessage } = requestQueue.shift();
     let stableCount = 0;
-    lastApprovalMessage = null; // Reset for new command
+    lastApprovalMessage = null;
 
-    // AIが生成を開始するまでの猶予期間（メッセージ注入後すぐにはキャンセルボタンが出ない）
+    // AIが生成を開始するまでの猶予期間
     await new Promise(r => setTimeout(r, 3000));
 
     const poll = async () => {
         try {
             const approval = await checkApprovalRequired(cdp);
             if (approval) {
-                // If we already sent THIS specific approval message, don't send it again
                 if (lastApprovalMessage === approval.message) {
                     setTimeout(poll, POLLING_INTERVAL);
                     return;
                 }
 
-                // Wait for 3 seconds to ensure it's not a "flash" button (e.g. auto-accept)
                 await new Promise(r => setTimeout(r, 3000));
-
-                // Re-verify after delay
                 const stillRequiresApproval = await checkApprovalRequired(cdp);
                 if (!stillRequiresApproval) {
-                    console.log("Approval button disappeared during grace period. Skipping Discord notification.");
                     setTimeout(poll, POLLING_INTERVAL);
                     return;
                 }
 
-                // Double check it's STILL the same message after the delay protection
                 if (lastApprovalMessage === approval.message) {
                     setTimeout(poll, POLLING_INTERVAL);
                     return;
@@ -1121,23 +1117,18 @@ async function monitorAIResponse(originalMessage, cdp) {
                 try {
                     const interaction = await reply.awaitMessageComponent({ filter: i => i.user.id === originalMessage.author.id, time: 60000 });
                     const allow = interaction.customId === 'approve_action';
-                    // Discordのタイムアウトを防ぐため、先にdeferUpdate
                     await interaction.deferUpdate();
-                    const clickResult = await clickApproval(cdp, allow);
+                    await clickApproval(cdp, allow);
                     await reply.edit({ content: `${reply.content}\n\n${allow ? '✅ **Approved**' : '❌ **Rejected**'}`, components: [] });
                     logInteraction('ACTION', `User ${allow ? 'Approved' : 'Rejected'} the request.`);
 
-                    // Wait for the button to disappear before resuming
                     for (let j = 0; j < 15; j++) {
                         if (!(await checkApprovalRequired(cdp))) break;
                         await new Promise(r => setTimeout(r, 500));
                     }
-
-                    // Reset tracking and continue monitoring if AI is still replying or has more steps
                     lastApprovalMessage = null;
                     setTimeout(poll, POLLING_INTERVAL);
                 } catch (e) {
-                    console.error('[INTERACTION_ERROR]', e.message, e.stack);
                     await reply.edit({ content: '⚠️ Approval timed out.', components: [] });
                     lastApprovalMessage = null;
                     setTimeout(poll, POLLING_INTERVAL);
@@ -1149,13 +1140,17 @@ async function monitorAIResponse(originalMessage, cdp) {
             if (!generating) {
                 stableCount++;
                 if (stableCount >= 3) {
-                    isGenerating = false;
                     const response = await getLastResponse(cdp);
                     if (response) {
                         const chunks = response.text.match(/[\s\S]{1,1900}/g) || [response.text];
                         await originalMessage.reply({ content: `🤖 **AI Response:**\n${chunks[0]}` });
                         for (let i = 1; i < chunks.length; i++) await originalMessage.channel.send(chunks[i]);
                     }
+
+                    isMonitoring = false;
+
+                    // 次のキューがあれば直ちに処理
+                    setTimeout(() => processQueue(cdp), 1000);
                     return;
                 }
             } else {
@@ -1165,11 +1160,17 @@ async function monitorAIResponse(originalMessage, cdp) {
             setTimeout(poll, POLLING_INTERVAL);
         } catch (e) {
             console.error("Poll error:", e);
-            isGenerating = false;
+            isMonitoring = false;
+            setTimeout(() => processQueue(cdp), 1000);
         }
     };
 
     setTimeout(poll, POLLING_INTERVAL);
+}
+
+async function monitorAIResponse(originalMessage, cdp) {
+    requestQueue.push({ originalMessage });
+    processQueue(cdp);
 }
 
 // --- SLASH COMMANDS DEFINITION ---
