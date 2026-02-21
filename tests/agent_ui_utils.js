@@ -567,6 +567,104 @@ export async function captureConversationSignature(cdp) {
     return value || { ok: false, lines: [], reason: 'signature_failed' };
 }
 
+export async function getConversationHistory(cdp, limit = 200) {
+    const safeLimit = Math.max(20, Math.min(1000, Number(limit) || 200));
+    const EXP = `(() => {
+        const SELECTORS = ${JSON.stringify(SELECTORS)};
+        ${domHelpersExpr()}
+        const convo = getConversationLines(SELECTORS);
+        if (!convo.layoutRecognized && !convo.fallback) {
+            return { ok: false, lines: [], reason: convo.reason || 'chat_layout_not_found' };
+        }
+        const lines = (convo.lines || []).slice(-${safeLimit});
+        return {
+            ok: true,
+            reason: convo.reason || 'ok',
+            layoutRecognized: Boolean(convo.layoutRecognized),
+            usedFallback: Boolean(convo.fallback),
+            lines
+        };
+    })()`;
+
+    const { value } = await evaluateInOrderedContexts(cdp, EXP, false, (v) => Boolean(v?.ok));
+    return value || { ok: false, lines: [], reason: 'history_probe_failed' };
+}
+
+export async function getStructuredMessageHistory(cdp, limit = 120) {
+    const safeLimit = Math.max(20, Math.min(1000, Number(limit) || 120));
+    const EXP = `(() => {
+        ${domHelpersExpr()}
+
+        function normalizeText(text) {
+            return String(text || '').replace(/\\r/g, '').replace(/[ \\t]+$/gm, '').trim();
+        }
+
+        const selectors = [
+            '[data-message-role]',
+            '[data-testid*="assistant"]',
+            '[data-testid*="message"]',
+            '[class*="message"]',
+            'article',
+            '[role="article"]'
+        ];
+
+        const items = [];
+        for (const item of getTargetDocs()) {
+            const doc = item.doc;
+            const seen = new Set();
+            const nodes = [];
+            for (const selector of selectors) {
+                for (const node of Array.from(doc.querySelectorAll(selector))) {
+                    if (!node || seen.has(node)) continue;
+                    seen.add(node);
+                    if (!isVisible(node)) continue;
+                    const text = normalizeText(node.innerText || node.textContent);
+                    if (!text || text.length < 8) continue;
+                    if (node.querySelectorAll && node.querySelectorAll('[data-message-role]').length > 8) continue;
+                    nodes.push(node);
+                }
+            }
+
+            nodes.sort((a, b) => {
+                if (a === b) return 0;
+                const pos = a.compareDocumentPosition(b);
+                if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+                if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+                return 0;
+            });
+
+            for (const node of nodes) {
+                const text = normalizeText(node.innerText || node.textContent);
+                if (!text) continue;
+                items.push({
+                    text,
+                    role: String(node.getAttribute('data-message-role') || '').toLowerCase(),
+                    docSource: item.source
+                });
+            }
+        }
+
+        const dedup = [];
+        const seenText = new Set();
+        for (const it of items) {
+            const key = it.text.toLowerCase();
+            if (seenText.has(key)) continue;
+            seenText.add(key);
+            dedup.push(it);
+        }
+
+        const sliced = dedup.slice(-${safeLimit});
+        return {
+            ok: sliced.length > 0,
+            reason: sliced.length > 0 ? 'ok' : 'structured_history_empty',
+            items: sliced
+        };
+    })()`;
+
+    const { value } = await evaluateInOrderedContexts(cdp, EXP, false, (v) => Boolean(v?.ok));
+    return value || { ok: false, reason: 'structured_history_probe_failed', items: [] };
+}
+
 export async function waitForAssistantOutput(cdp, promptText, timeoutMs = 60000, baselineLines = []) {
     const start = Date.now();
     let last = null;

@@ -1,5 +1,5 @@
 import { ensureCDP } from './cdp_utils.js';
-import { captureConversationSignature, getChatSnapshot, injectMessage, startNewChat, waitForAssistantOutput, waitForGenerationStart } from './agent_ui_utils.js';
+import { captureConversationSignature, getChatSnapshot, getConversationHistory, getStructuredMessageHistory, injectMessage, startNewChat, waitForAssistantOutput, waitForGenerationStart } from './agent_ui_utils.js';
 
 async function runTest() {
     console.log('=== Testing Meaningful New Chat Workflow ===');
@@ -58,6 +58,58 @@ async function runTest() {
         process.exit(1);
     }
     console.log(`[SUCCESS] Assistant output detected: ${output.outputLine}`);
+
+    console.log('[INFO] Verifying conversation history contains prompt and response...');
+    const history = await getConversationHistory(cdp, 300);
+    if (!history.ok) {
+        console.error(`[FAILED] History probe failed. reason=${history.reason}`);
+        process.exit(1);
+    }
+
+    const lines = history.lines || [];
+    const promptMarker = `[run:${runId}]`;
+    const hasPromptInHistory = lines.some(line => line.includes(promptMarker));
+
+    const outputHead = String(output.outputLine || '').trim().slice(0, 40);
+    const hasResponseInHistory = outputHead.length > 0 && lines.some(line => line.includes(outputHead));
+
+    if (!hasPromptInHistory || !hasResponseInHistory) {
+        console.error(`[FAILED] History verification failed. hasPrompt=${hasPromptInHistory}, hasResponse=${hasResponseInHistory}, lines=${lines.length}`);
+        process.exit(1);
+    }
+
+    const structured = await getStructuredMessageHistory(cdp, 160);
+    if (!structured.ok) {
+        console.error(`[FAILED] Structured history probe failed. reason=${structured.reason}`);
+        process.exit(1);
+    }
+
+    const structuredTexts = (structured.items || []).map(i => String(i.text || ''));
+    const hasPromptInStructured = structuredTexts.some(t => t.includes(promptMarker));
+    const hasResponseInStructured = outputHead.length > 0 && structuredTexts.some(t => t.includes(outputHead));
+    if (structuredTexts.length === 0) {
+        console.error('[FAILED] Structured history verification failed. items=0');
+        process.exit(1);
+    }
+    if (!hasPromptInStructured || !hasResponseInStructured) {
+        console.log(`[WARN] Structured history did not include both markers. hasPrompt=${hasPromptInStructured}, hasResponse=${hasResponseInStructured}, items=${structuredTexts.length}`);
+    } else {
+        console.log('[SUCCESS] Structured history includes both prompt marker and response marker.');
+    }
+
+    const hasDiffSummaryLine = lines.some(line =>
+        /(^|\\s)Edited($|\\s)/i.test(line) ||
+        /\\b\\d+\\s+insertions?\\s*\\(\\+\\)/i.test(line) ||
+        /\\b\\d+\\s+deletions?\\s*\\(-\\)/i.test(line) ||
+        /^[+-]\\d+$/.test(String(line || '').trim())
+    );
+    if (hasDiffSummaryLine) {
+        console.log('[SUCCESS] Diff summary style lines are present in history.');
+    } else {
+        console.log('[WARN] Diff summary style lines were not found in this run history.');
+    }
+
+    console.log(`[SUCCESS] History verified. lines=${lines.length}, structuredItems=${structuredTexts.length}, layoutRecognized=${history.layoutRecognized}, fallback=${history.usedFallback}`);
     console.log('[SUCCESS] VERIFIED: New Chat + prompt submission + visible output is working.');
     console.log('Test finished.');
     process.exit(0);
