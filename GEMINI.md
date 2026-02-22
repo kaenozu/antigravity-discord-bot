@@ -5,11 +5,11 @@
 - Prefer small, safe diffs.
 - Never invent API responses; ask when unsure.
 - Follow project Rules and existing patterns.
-- githubの操作はghを使用して
+- Use `gh` for GitHub operations.
 
 ## Development Rules
-- **Scheduling**: 全ての定時実行タスク（スケジューラー）は、`workspace/schedules.json` に登録すること。コードへのハードコーディングは禁止。
-- **Management**: スケジュールの管理（追加・削除・一覧）は Discord の `/schedule` コマンドを通じて行うこと。
-- **Environment**: win32環境（PowerShell）では、コマンド連結の '&&' を絶対に使用せず、gitコマンド等は必ず1行ずつ個別に実行すること。
-- **Branching**: プロジェクトの main ブランチには直接プッシュせず、軽微な修正でも必ず作業ブランチを作成し 'gh pr create' を通じて統合すること。
-- **Verification**: 複数のプルリクエストをマージする際は、一括マージ後の修正ではなく、1つマージするごとに検証（tscチェック等）を行うこと。
+- **Scheduling**: All periodic execution tasks (schedulers) must be registered in `workspace/schedules.json`. Hard-coding in the source code is prohibited.
+- **Management**: Schedule management (add, remove, list) must be performed via the Discord `/schedule` command.
+- **Environment**: In win32 environments (PowerShell), never use '&&' for command concatenation. Execute commands like `git` individually on separate lines.
+- **Branching**: Never push directly to the `main` branch. Even for minor fixes, always create a feature branch and integrate via `gh pr create`.
+- **Verification**: When merging multiple pull requests, perform incremental verification (e.g., `tsc` checks) after each merge, rather than fixing everything after a bulk merge.
