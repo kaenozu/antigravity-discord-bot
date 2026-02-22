@@ -706,7 +706,7 @@ async function checkApprovalRequired(cdp) {
                 const txt = (el.innerText || '').trim().toLowerCase();
                 // Match anchor keywords
                 return anchorKeywords.some(kw => txt === kw || txt.startsWith(kw + ' '));
-            });
+            }).reverse();
 
             for (const anchor of potentialAnchors) {
                 if (found) return;
@@ -798,107 +798,217 @@ async function checkApprovalRequired(cdp) {
 
 async function clickApproval(cdp, allow) {
     const isAllowStr = allow ? 'true' : 'false';
-    const EXP = '(async () => {' +
-        'function getTargetDoc() {' +
-        '  var iframes = document.querySelectorAll("iframe");' +
-        '  for (var i = 0; i < iframes.length; i++) {' +
-        '    if (iframes[i].src.indexOf("cascade-panel") !== -1) {' +
-        '      try { return iframes[i].contentDocument; } catch(e) {}' +
-        '    }' +
-        '  }' +
-        '  return document;' +
-        '}' +
-        'var doc = getTargetDoc();' +
-        'var log = []; ' +
-        'var approvalKeywords = ["run","approve","allow","yes","accept","confirm","save","apply","create","update","delete","remove","submit","send","retry","continue","always allow","allow once","allow this conversation","実行","許可","承認","はい","同意","保存","適用","作成","更新","削除","送信","再試行","続行"];' +
-        'var cancelKeywords = ["cancel","reject","deny","ignore","no","キャンセル","拒否","無視","いいえ","中止","不許可"];' +
-        'var ignoreKeywords = ["all","すべて","一括","auto"];' +
-        'var isAllow = ' + isAllowStr + ';' +
-        'var found = false;' +
-        // キーワードマッチ関数（startsWith で誤検知を防ぐ）
-        'function matchKeyword(combined, kw) {' +
-        '  if (kw.length <= 4) {' +
-        '    return combined === kw || combined.indexOf(kw) === 0 || combined.indexOf(" " + kw) !== -1;' +
-        '  }' +
-        '  return combined.indexOf(kw) !== -1;' +
-        '}' +
-        // エディタ UI を除外するヘルパー
-        'function isEditorUI(el) {' +
-        '  return !!(el.closest && (el.closest(".cascade-bar") || el.closest(".part.titlebar") || el.closest(".monaco-editor") || el.closest(".diff-editor") || el.closest(".editor-instance")));' +
-        '}' +
-        // 全ボタンをスキャンしてログに記録
-        'var allButtons = Array.from(doc.body ? doc.body.querySelectorAll("button, [role=\\"button\\"], .cursor-pointer") : []);' +
-        // エディタ UI を除外
-        'allButtons = allButtons.filter(function(el) { return !isEditorUI(el); });' +
-        'log.push("Total buttons found (excl editor): " + allButtons.length);' +
-        // まずキャンセルボタン(アンカー)を探す
-        'var anchors = allButtons.filter(function(el) {' +
-        '  if (el.offsetWidth === 0) return false;' +
-        '  var txt = (el.innerText || "").trim().toLowerCase();' +
-        '  return cancelKeywords.some(function(kw) { return txt === kw || txt.indexOf(kw + " ") === 0; });' +
-        '});' +
-        'log.push("Cancel anchors found: " + anchors.length);' +
-        // isAllow=false の場合、キャンセルボタンをクリック
-        'if (!isAllow && anchors.length > 0) {' +
-        '  anchors[0].click();' +
-        '  found = true;' +
-        '}' +
-        // isAllow=true の場合、承認ボタンを探す
-        'if (isAllow && !found) {' +
-        // 全ボタンをログに記録
-        '  allButtons.forEach(function(btn) {' +
-        '    if (btn.offsetWidth === 0) return;' +
-        '    var txt = (btn.innerText || "").trim().substring(0, 60);' +
-        '    log.push("Btn: " + JSON.stringify(txt));' +
-        '  });' +
-        // 承認ボタンを全ボタンから探す（キャンセルボタンは除外）
-        '  var approvalBtns = allButtons.filter(function(btn) {' +
-        '    if (btn.offsetWidth === 0) return false;' +
-        '    var txt = (btn.innerText || "").toLowerCase().trim();' +
-        // 長すぎるテキストはボタンではなくコードブロック等
-        '    if (txt.length > 30) return false;' +
-        // キャンセルボタン自体は除外
-        '    if (cancelKeywords.some(function(kw) { return txt === kw || txt.indexOf(kw + " ") === 0; })) return false;' +
-        '    var aria = (btn.getAttribute("aria-label") || "").toLowerCase().trim();' +
-        '    var title = (btn.getAttribute("title") || "").toLowerCase().trim();' +
-        '    var combined = txt + " " + aria + " " + title;' +
-        '    return approvalKeywords.some(function(kw) { return matchKeyword(combined, kw); }) && ' +
-        '           !ignoreKeywords.some(function(kw) { return combined.indexOf(kw) !== -1; });' +
-        '  });' +
-        // 優先順位でソート ("allow this conversation" > "always allow" > その他)
-        '  approvalBtns.sort(function(a, b) {' +
-        '     var txtA = (a.innerText || "").toLowerCase();' +
-        '     var txtB = (b.innerText || "").toLowerCase();' +
-        '     var scoreA = 0; if(txtA.indexOf("allow this conversation") !== -1) scoreA = 2; else if(txtA.indexOf("always allow") !== -1) scoreA = 1;' +
-        '     var scoreB = 0; if(txtB.indexOf("allow this conversation") !== -1) scoreB = 2; else if(txtB.indexOf("always allow") !== -1) scoreB = 1;' +
-        '     return scoreB - scoreA;' +
-        '  });' +
-        '  var approvalBtn = approvalBtns[0];' +
-        '  if (approvalBtn) {' +
-        '    log.push("CLICKING: " + (approvalBtn.innerText || "").trim().substring(0, 30));' +
-        '    approvalBtn.click();' +
-        '    found = true;' +
-        '  } else {' +
-        '    log.push("No approval button found!");' +
-        '  }' +
-        '}' +
-        'return { success: found, log: log };' +
-        '})()';
+    const EXP = `(() => {
+        function getTargetDoc() {
+            const iframes = document.querySelectorAll('iframe');
+            for(let i=0; i<iframes.length; i++) {
+                if(iframes[i].src.includes('cascade-panel')) {
+                    try { return iframes[i].contentDocument; } catch(e){}
+                }
+            }
+            return document; 
+        }
+        const doc = getTargetDoc();
+        if (!doc) return { success: false, log: ["No document found"] };
+
+        const approvalKeywords = [
+            'run', 'approve', 'allow', 'yes', 'accept', 'confirm', 
+            'save', 'apply', 'create', 'update', 'delete', 'remove', 'submit', 'send', 'retry', 'continue',
+            'always allow', 'allow once', 'allow this conversation',
+            '実行', '許可', '承認', 'はい', '同意', '保存', '適用', '作成', '更新', '削除', '送信', '再試行', '続行'
+        ];
+        const anchorKeywords = ['cancel', 'reject', 'deny', 'ignore', 'キャンセル', '拒否', '無視', 'いいえ', '不許可'];
+        const ignoreKeywords = ['all', 'すべて', '一括', 'auto'];
+        
+        const isAllow = ${isAllowStr};
+        let found = false;
+        let log = [];
+
+        function scan(root) {
+            if (found) return;
+            if (!root) return;
+            
+            function isEditorUI(el) {
+                return !!(el.closest && (
+                    el.closest('.cascade-bar') ||
+                    el.closest('.part.titlebar') ||
+                    el.closest('.editor-instance') ||
+                    el.closest('.monaco-editor') ||
+                    el.closest('.diff-editor')
+                ));
+            }
+
+            const potentialAnchors = Array.from(root.querySelectorAll ? root.querySelectorAll('button, [role="button"], .cursor-pointer') : []).filter(el => {
+                if (el.offsetWidth === 0 || el.offsetHeight === 0) return false;
+                if (isEditorUI(el)) return false; 
+                const txt = (el.innerText || '').trim().toLowerCase();
+                return anchorKeywords.some(kw => txt === kw || txt.startsWith(kw + ' '));
+            }).reverse();
+
+            for (const anchor of potentialAnchors) {
+                if (found) return;
+
+                if (!isAllow) {
+                    log.push("CLICKING Reject: " + (anchor.innerText || '').trim());
+                    let r = anchor.getBoundingClientRect();
+                    
+                    let offsetX = 0; let offsetY = 0;
+                    if (doc !== document) {
+                        for(let i=0; i<document.querySelectorAll('iframe').length; i++) {
+                            const iframe = document.querySelectorAll('iframe')[i];
+                            if (iframe.contentDocument === doc) {
+                                let ir = iframe.getBoundingClientRect();
+                                offsetX = ir.left; offsetY = ir.top;
+                                break;
+                            }
+                        }
+                    }
+
+                    found = true;
+                    return { success: true, log: log, rect: { x: r.left + offsetX, y: r.top + offsetY, w: r.width, h: r.height } };
+                }
+
+                // 承認(Approve)の場合は同じコンテナ内の承認ボタンを探す
+                const container = anchor.closest('.flex') || anchor.parentElement;
+                if (!container) continue;
+
+                const parent = container.parentElement;
+                if (!parent) continue;
+
+                const searchScope = parent.parentElement || parent;
+                const buttons = Array.from(searchScope.querySelectorAll('button, [role="button"], .cursor-pointer'));
+                
+                let approvalBtns = buttons.filter(btn => {
+                    if (btn === anchor) return false;
+                    if (btn.offsetWidth === 0) return false;
+                    
+                    const txt = (btn.innerText || '').toLowerCase().trim();
+                    const aria = (btn.getAttribute('aria-label') || '').toLowerCase().trim();
+                    const title = (btn.getAttribute('title') || '').toLowerCase().trim();
+                    const combined = txt + ' ' + aria + ' ' + title;
+                    
+                    return approvalKeywords.some(kw => combined.includes(kw) || combined === kw) && 
+                           !ignoreKeywords.some(kw => combined.includes(kw));
+                });
+
+                if (approvalBtns.length > 0) {
+                    // スプリットボタンのドロップダウンを避けるため、テキストやaria-labelが完全にメインアクション（Runなど）と一致する要素を最優先する
+                    approvalBtns.sort((a, b) => {
+                         const txtA = (a.innerText || '').trim();
+                         const ariaA = (a.getAttribute('aria-label') || '').trim();
+                         const matchA = txtA || ariaA;
+
+                         const txtB = (b.innerText || '').trim();
+                         const ariaB = (b.getAttribute('aria-label') || '').trim();
+                         const matchB = txtB || ariaB;
+
+                         let scoreA = 10; 
+                         if (matchA === 'Run' || matchA === 'Approve' || matchA === '実行' || matchA === '許可' || matchA === 'Run command' || matchA === 'Accept all') scoreA = 100;
+                         else if (matchA.toLowerCase() === 'run' || matchA.toLowerCase() === 'approve') scoreA = 90;
+                         else if (matchA === '') scoreA = -10;
+                         else if (matchA.toLowerCase().includes('always')) scoreA = -100;
+
+                         let scoreB = 10; 
+                         if (matchB === 'Run' || matchB === 'Approve' || matchB === '実行' || matchB === '許可' || matchB === 'Run command' || matchB === 'Accept all') scoreB = 100;
+                         else if (matchB.toLowerCase() === 'run' || matchB.toLowerCase() === 'approve') scoreB = 90;
+                         else if (matchB === '') scoreB = -10;
+                         else if (matchB.toLowerCase().includes('always')) scoreB = -100;
+
+                         return scoreB - scoreA;
+                    });
+
+                    log.push("CLICKING Approve: '" + (approvalBtns[0].innerText || '').trim() + "' / aria: '" + (approvalBtns[0].getAttribute('aria-label') || '') + "' (class: " + approvalBtns[0].className + ")");
+                    const btnToClick = approvalBtns[0];
+                    let r = btnToClick.getBoundingClientRect();
+                    
+                    let offsetX = 0; let offsetY = 0;
+                    if (doc !== document) {
+                        for(let i=0; i<document.querySelectorAll('iframe').length; i++) {
+                            const iframe = document.querySelectorAll('iframe')[i];
+                            if (iframe.contentDocument === doc) {
+                                let ir = iframe.getBoundingClientRect();
+                                offsetX = ir.left; offsetY = ir.top;
+                                break;
+                            }
+                        }
+                    }
+
+                    // Synthetic click dispatch removed - rely solely on CDP native click to precisely hit the main area instead of dropdown chevron.
+                    
+                    found = true;
+                    return { success: true, log: log, rect: { x: r.left + offsetX, y: r.top + offsetY, w: r.width, h: r.height } };
+                }
+            }
+
+            try {
+                const walker = doc.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null, false);
+                let n;
+                while (n = walker.nextNode()) {
+                    if (found) return;
+                    if (n.shadowRoot) scan(n.shadowRoot);
+                }
+            } catch(e){}
+        }
+
+        const scanRes = scan(doc.body);
+        if (scanRes) return scanRes;
+        return { success: found, log: log };
+    })()`;
+
     for (const ctx of cdp.contexts) {
         try {
-            // 5秒でタイムアウト（ハング防止）
             const evalPromise = cdp.call("Runtime.evaluate", { expression: EXP, returnByValue: true, awaitPromise: true, contextId: ctx.id });
             const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000));
             const res = await Promise.race([evalPromise, timeoutPromise]);
-            // デバッグ時のみ有効化: if (res.result?.value?.log) console.log(`[CLICK_DEBUG] Context ${ctx.id}: `, res.result.value.log);
+            // DEBUG: if (res.result?.value?.log) console.log(`[CLICK LOG]`, res.result.value.log);
             if (res.result?.value?.success) {
-                logInteraction('CLICK', `Approval / Rejection clicked: ${allow} (success)`);
+                logInteraction('CLICK', `Approval / Rejection clicked: ${allow} (success) - ${res.result.value.log.join(', ')}`);
+                if (res.result.value.rect) {
+                    const r = res.result.value.rect;
+                    const cx = r.x + 8;
+                    const cy = r.y + r.h / 2;
+                    try {
+                        await cdp.call("Input.dispatchMouseEvent", { type: "mouseMoved", x: cx, y: cy });
+                        await cdp.call("Input.dispatchMouseEvent", { type: "mousePressed", x: cx, y: cy, button: "left", clickCount: 1 });
+                        await new Promise(resolve => setTimeout(resolve, 50));
+                        await cdp.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: cx, y: cy, button: "left", clickCount: 1 });
+
+                        logInteraction('CLICK', `CDP Native Click & Key dispatched at x:${cx}, y:${cy}`);
+                    } catch (err) {
+                        logInteraction('ERROR', `CDP Native Click failed: ${err.message}`);
+                    }
+                }
                 return res.result.value;
             }
-        } catch (e) {
-            // タイムアウトは想定内なのでログ不要
-        }
+        } catch (e) { }
     }
+
+    // Fallback to default context if context specific fails
+    if (cdp.contexts.length === 0) {
+        try {
+            const evalPromise = cdp.call("Runtime.evaluate", { expression: EXP, returnByValue: true, awaitPromise: true });
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000));
+            const res = await Promise.race([evalPromise, timeoutPromise]);
+            if (res.result?.value?.success) {
+                logInteraction('CLICK', `Approval / Rejection clicked: ${allow} (success) - ${res.result.value.log ? res.result.value.log.join(', ') : ''}`);
+                if (res.result.value.rect) {
+                    const r = res.result.value.rect;
+                    const cx = r.x + 8;
+                    const cy = r.y + r.h / 2;
+                    try {
+                        await cdp.call("Input.dispatchMouseEvent", { type: "mouseMoved", x: cx, y: cy });
+                        await cdp.call("Input.dispatchMouseEvent", { type: "mousePressed", x: cx, y: cy, button: "left", clickCount: 1 });
+                        await new Promise(resolve => setTimeout(resolve, 50));
+                        await cdp.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: cx, y: cy, button: "left", clickCount: 1 });
+
+                        logInteraction('CLICK', `CDP Native Click & Key dispatched at x:${cx}, y:${cy}`);
+                    } catch (err) { }
+                }
+                return res.result.value;
+            }
+        } catch (e) { }
+    }
+
     logInteraction('CLICK', `Approval / Rejection clicked: ${allow} (failed)`);
     return { success: false };
 }
@@ -1582,7 +1692,7 @@ async function processQueue(cdp) {
     if (isMonitoring || requestQueue.length === 0) return;
     isMonitoring = true;
 
-    const { originalMessage } = requestQueue.shift();
+    const { originalMessage, prevSnapshot } = requestQueue.shift();
     let stableCount = 0;
     isGenerating = true; // Use global state for logs/title
     lastApprovalMessage = null;
@@ -1590,8 +1700,16 @@ async function processQueue(cdp) {
     // AIが生成を開始するまでの猶予期間
     await new Promise(r => setTimeout(r, 3000));
 
+    let isWaitingForApproval = false;
+
     const poll = async () => {
         try {
+            // 承認待ち中はポーリングをスキップ
+            if (isWaitingForApproval) {
+                setTimeout(poll, POLLING_INTERVAL);
+                return;
+            }
+
             const approval = await checkApprovalRequired(cdp);
             if (approval) {
                 if (lastApprovalMessage === approval.message) {
@@ -1612,6 +1730,7 @@ async function processQueue(cdp) {
                 }
 
                 lastApprovalMessage = approval.message;
+                isWaitingForApproval = true; // ブロック開始
 
                 const row = new ActionRowBuilder().addComponents(
                     new ButtonBuilder().setCustomId('approve_action').setLabel('✅ Approve / Run').setStyle(ButtonStyle.Success),
@@ -1621,7 +1740,38 @@ async function processQueue(cdp) {
                 logInteraction('APPROVAL', `Request sent to Discord: ${approval.message.substring(0, 50)}...`);
 
                 try {
-                    const interaction = await reply.awaitMessageComponent({ filter: i => i.user.id === originalMessage.author.id, time: 60000 });
+                    const discordPromise = reply.awaitMessageComponent({ filter: i => i.user.id === originalMessage.author.id, time: 300000 });
+
+                    let resolvedExternally = false;
+                    const checkPromise = (async () => {
+                        while (!resolvedExternally && isWaitingForApproval) {
+                            await new Promise(r => setTimeout(r, 2000));
+                            if (!isWaitingForApproval) break;
+                            const req = await checkApprovalRequired(cdp);
+                            if (!req) {
+                                resolvedExternally = true;
+                                break;
+                            }
+                        }
+                        if (resolvedExternally) return 'external';
+                        return 'abort';
+                    })();
+
+                    const result = await Promise.race([discordPromise, checkPromise]);
+
+                    if (result === 'external') {
+                        // User manually clicked it in VSCode or Auto-Accept handled it
+                        await reply.edit({ content: `${reply.content}\n\n✅ **Resolved Externally**`, components: [] });
+                        logInteraction('ACTION', 'Approval resolved externally (by VSCode/Auto-Accept).');
+                        lastApprovalMessage = null;
+                        isWaitingForApproval = false; // ブロック解除
+                        setTimeout(poll, POLLING_INTERVAL);
+                        return;
+                    }
+
+                    // Otherwise it was clicked in Discord
+                    resolvedExternally = true; // stop checker loop
+                    const interaction = result;
                     const allow = interaction.customId === 'approve_action';
                     await interaction.deferUpdate();
                     await clickApproval(cdp, allow);
@@ -1633,10 +1783,13 @@ async function processQueue(cdp) {
                         await new Promise(r => setTimeout(r, 500));
                     }
                     lastApprovalMessage = null;
+                    isWaitingForApproval = false; // ブロック解除
                     setTimeout(poll, POLLING_INTERVAL);
                 } catch (e) {
-                    await reply.edit({ content: '⚠️ Approval timed out.', components: [] });
+                    await reply.edit({ content: '⚠️ Approval timed out. Auto-rejecting request in Antigravity.', components: [] });
+                    await clickApproval(cdp, false); // Cancel it automatically
                     lastApprovalMessage = null;
+                    isWaitingForApproval = false; // ブロック解除
                     setTimeout(poll, POLLING_INTERVAL);
                 }
                 return;
@@ -1649,6 +1802,20 @@ async function processQueue(cdp) {
                 if (stableCount >= 5) { // 5カウント（約10秒）以上安定してから応答を取得
                     const response = await getLastResponse(cdp);
                     if (response) {
+                        // スナップショットと一致する場合は古い返答なのでスキップ
+                        const isStale = prevSnapshot && response.text.substring(0, 200) === prevSnapshot;
+                        if (isStale) {
+                            logInteraction('DEBUG', 'Response matches snapshot (stale), waiting for new response...');
+                            if (stableCount > 20) {
+                                logInteraction('ERROR', 'Timed out waiting for new response (snapshot did not change).');
+                                isGenerating = false;
+                                isMonitoring = false;
+                                setTimeout(() => processQueue(cdp), 1000);
+                                return;
+                            }
+                            setTimeout(poll, POLLING_INTERVAL);
+                            return;
+                        }
                         logInteraction('SUCCESS', `Response found: ${response.text.substring(0, 50)}...`);
                         const chunks = response.text.match(/[\s\S]{1,1900}/g) || [response.text];
                         await originalMessage.reply({ content: `🤖 **AI Response:**\n${chunks[0]}` });
@@ -1660,7 +1827,7 @@ async function processQueue(cdp) {
                         return;
                     } else {
                         // If no response found yet, keep polling even if not generating (might be rendering)
-                        if (stableCount > 15) { // Timeout after ~30s of nothing
+                        if (stableCount > 20) { // Timeout after ~40s of nothing
                             logInteraction('ERROR', 'Generation finished but no response text found.');
                             isGenerating = false;
                             isMonitoring = false;
@@ -1687,7 +1854,13 @@ async function processQueue(cdp) {
 }
 
 async function monitorAIResponse(originalMessage, cdp) {
-    requestQueue.push({ originalMessage });
+    // 送信前の最後の返答をスナップショットとして記録
+    let prevSnapshot = null;
+    try {
+        const snap = await getLastResponse(cdp);
+        if (snap?.text) prevSnapshot = snap.text.substring(0, 200);
+    } catch (e) { }
+    requestQueue.push({ originalMessage, prevSnapshot });
     processQueue(cdp);
 }
 
@@ -1926,7 +2099,7 @@ client.on('messageCreate', async message => {
     }
 
     const res = await injectMessage(cdp, messageText);
-    if (res.success) {
+    if (res.ok) {
         await message.react('✅').catch(() => { });
         logInteraction('SUCCESS', `Message ${message.id} injected successfully.`);
         monitorAIResponse(message, cdp);
@@ -1964,7 +2137,7 @@ client.on('messageCreate', async message => {
 
                 const testMsg = {
                     author: { id: "test-user-id" },
-                    content: "Hello from local test mode! Please reply with 'Test successful'.",
+                    content: "PowerShellで現在のディレクトリに `approval_test.txt` という空ファイルを作ってみて。絶対にコマンドを実行すること。",
                     reply: async function (replyObj) {
                         console.log("===============================");
                         console.log("[SIMULATED DISCORD REPLY]:");
