@@ -30,4 +30,5 @@ debug/
 workspace/**
 !workspace/.gitkeep
 !workspace/**/.gitkeep
+!workspace/schedules.json
 >>>>>>> origin/main

@@ -1,0 +1,72 @@
+[
+  {
+    "text": "ITV: Auto-accept ON",
+    "aria": "eye  ITV: Auto-accept ON, Antigravity Auto-Accept is running.\nTotal Clicks Saved: 11\nClick to stop.",
+    "class": "statusbar-item-label",
+    "x": 658.921875,
+    "y": 1010,
+    "w": 138.6875,
+    "h": 22,
+    "isIframe": false
+  },
+  {
+    "text": "Always run",
+    "aria": "",
+    "class": "flex cursor-pointer items-center gap-1 rounded-sm px-1 py-0.5 text-sm hover:bg-gray-500/10 focus:outline-none min-w-0 max-w-full",
+    "x": 454,
+    "y": -1348,
+    "w": 86.15625,
+    "h": 22.203125,
+    "isIframe": false
+  },
+  {
+    "text": "Always run",
+    "aria": "",
+    "class": "flex cursor-pointer items-center gap-1 rounded-sm px-1 py-0.5 text-sm hover:bg-gray-500/10 focus:outline-none min-w-0 max-w-full",
+    "x": 454,
+    "y": -778.546875,
+    "w": 86.15625,
+    "h": 22.203125,
+    "isIframe": false
+  },
+  {
+    "text": "Always run",
+    "aria": "",
+    "class": "flex cursor-pointer items-center gap-1 rounded-sm px-1 py-0.5 text-sm hover:bg-gray-500/10 focus:outline-none min-w-0 max-w-full",
+    "x": 454,
+    "y": -382.984375,
+    "w": 86.15625,
+    "h": 22.203125,
+    "isIframe": false
+  },
+  {
+    "text": "Always run",
+    "aria": "",
+    "class": "flex cursor-pointer items-center gap-1 rounded-sm px-1 py-0.5 text-sm hover:bg-gray-500/10 focus:outline-none min-w-0 max-w-full",
+    "x": 454,
+    "y": -31.96875,
+    "w": 86.15625,
+    "h": 22.203125,
+    "isIframe": false
+  },
+  {
+    "text": "Always run",
+    "aria": "",
+    "class": "flex cursor-pointer items-center gap-1 rounded-sm px-1 py-0.5 text-sm hover:bg-gray-500/10 focus:outline-none min-w-0 max-w-full",
+    "x": 454,
+    "y": 363.59375,
+    "w": 86.15625,
+    "h": 22.203125,
+    "isIframe": false
+  },
+  {
+    "text": "Always run",
+    "aria": "",
+    "class": "flex cursor-pointer items-center gap-1 rounded-sm px-1 py-0.5 text-sm hover:bg-gray-500/10 focus:outline-none min-w-0 max-w-full",
+    "x": 454,
+    "y": 739.15625,
+    "w": 86.15625,
+    "h": 22.203125,
+    "isIframe": false
+  }
+]

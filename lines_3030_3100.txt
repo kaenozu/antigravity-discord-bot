@@ -1,0 +1,70 @@
+﻿                    setTimeout(poll, POLLING_INTERVAL);
+                } catch (e) {
+                    await reply.edit({ content: '⚠️ Approval timed out. Auto-rejecting request in Antigravity.', components: [] });
+                    await clickApproval(cdp, false); // Cancel it automatically
+                    lastApprovalMessage = null;
+                    globalThis.isWaitingForApproval = false; // ブロック解除
+                    setTimeout(poll, POLLING_INTERVAL);
+                }
+                return;
+            }
+
+            const generating = await checkIsGenerating(cdp);
+            if (generating && !globalThis.generationStarted) {
+                globalThis.generationStarted = true;
+                logInteraction('generating', 'AI response generation started.');
+            }
+            if (!generating) {
+                stableCount++;
+                if (stableCount % 5 === 0) logInteraction('DEBUG', `Waiting for generation to finish... (Stable: ${stableCount})`);
+                if (stableCount >= 5) { // 5カウント（約10秒）以上安定してから応答を取得
+                    const response = await getLastResponse(cdp);
+                    if (response) {
+                        // スナップショットと一致する場合は古い返答なのでスキップ
+                        const isStale = prevSnapshot && response.text.substring(0, 200) === prevSnapshot;
+                        if (isStale) {
+                            logInteraction('DEBUG', 'Response matches snapshot (stale), waiting for new response...');
+                            if (stableCount > 20) {
+                                logInteraction('ERROR', 'Timed out waiting for new response (snapshot did not change).');
+                                isGenerating = false;
+                                isMonitoring = false;
+                                setTimeout(() => processQueue(cdp), 1000);
+                                return;
+                            }
+                            setTimeout(poll, POLLING_INTERVAL);
+                            return;
+                        }
+                        logInteraction('SUCCESS', `Response found: ${response.text.substring(0, 50)}...`);
+                        const chunks = response.text.match(/[\s\S]{1,1900}/g) || [response.text];
+                        await originalMessage.reply({ content: `🤖 **AI Response:**\n${chunks[0]}` });
+                        for (let i = 1; i < chunks.length; i++) await originalMessage.channel.send(chunks[i]);
+
+                        isGenerating = false;
+                        isMonitoring = false;
+                        setTimeout(() => processQueue(cdp), 1000);
+                        return;
+                    } else {
+                        // If no response found yet, keep polling even if not generating (might be rendering)
+                        if (stableCount > 20) { // Timeout after ~40s of nothing
+                            logInteraction('ERROR', 'Generation finished but no response text found.');
+                            isGenerating = false;
+                            isMonitoring = false;
+                            setTimeout(() => processQueue(cdp), 1000);
+                            return;
+                        }
+                    }
+                }
+            } else {
+                if (stableCount > 0) logInteraction('DEBUG', 'AI started generating again.');
+                stableCount = 0;
+            }
+
+            setTimeout(poll, POLLING_INTERVAL);
+        } catch (e) {
+            console.error("Poll error:", e);
+            logInteraction('ERROR', `Poll error: ${e?.stack || e?.message || String(e)}`);
+            isGenerating = false;
+            isMonitoring = false;
+            setTimeout(() => processQueue(cdp), 1000);
+        }
+    };
