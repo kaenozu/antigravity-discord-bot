@@ -3187,10 +3187,7 @@ const commands = [
             }
         ]
     },
-    {
-        name: 'weather_test',
-        description: 'Test the 6:00 AM weather notification immediately',
-    },
+
     {
         name: 'schedule',
         description: 'Manage scheduled tasks',
@@ -3524,11 +3521,7 @@ client.on('interactionCreate', async interaction => {
             return;
         }
 
-        if (commandName === 'weather_test') {
-            await interaction.editReply('Triggering weather notification test...');
-            await triggerScheduledTask("今日の埼玉の天気を教えて", 'TEST');
-            return;
-        }
+
 
         if (commandName === 'schedule') {
             const sub = interaction.options.getSubcommand();
