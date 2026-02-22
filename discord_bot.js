@@ -3190,6 +3190,35 @@ const commands = [
     {
         name: 'weather_test',
         description: 'Test the 6:00 AM weather notification immediately',
+    },
+    {
+        name: 'schedule',
+        description: 'Manage scheduled tasks',
+        options: [
+            {
+                name: 'list',
+                description: 'List all scheduled tasks',
+                type: 1,
+            },
+            {
+                name: 'add',
+                description: 'Add a new scheduled task',
+                type: 1,
+                options: [
+                    { name: 'name', description: 'Name of the task', type: 3, required: true },
+                    { name: 'time', description: 'Time (HH:MM)', type: 3, required: true },
+                    { name: 'prompt', description: 'Prompt to send', type: 3, required: true }
+                ]
+            },
+            {
+                name: 'remove',
+                description: 'Remove a scheduled task',
+                type: 1,
+                options: [
+                    { name: 'name', description: 'Name of the task to remove', type: 3, required: true }
+                ]
+            }
+        ]
     }
 ];
 
@@ -3275,7 +3304,10 @@ client.on('interactionCreate', async interaction => {
                 '`/mode` Show mode\n' +
                 '`/mode target:<planning|fast>` Switch mode\n' +
                 '`/list_windows` List available windows\n' +
-                '`/select_window number:<n>` Select active window'
+                '`/select_window number:<n>` Select active window\n' +
+                '`/schedule list` List scheduled tasks\n' +
+                '`/schedule add name:<n> time:<HH:MM> prompt:<p>` Add task\n' +
+                '`/schedule remove name:<n>` Remove task'
             );
             return;
         }
@@ -3496,6 +3528,72 @@ client.on('interactionCreate', async interaction => {
             await interaction.editReply('Triggering weather notification test...');
             await triggerScheduledTask("今日の埼玉の天気を教えて", 'TEST');
             return;
+        }
+
+        if (commandName === 'schedule') {
+            const sub = interaction.options.getSubcommand();
+            const schedulesPath = path.join(WORKSPACE_ROOT || path.join(process.cwd(), 'workspace'), 'schedules.json');
+
+            if (sub === 'list') {
+                if (!fs.existsSync(schedulesPath)) {
+                    await interaction.editReply('No schedules found.');
+                    return;
+                }
+                const schedules = JSON.parse(fs.readFileSync(schedulesPath, 'utf8'));
+                if (schedules.length === 0) {
+                    await interaction.editReply('No schedules registered.');
+                    return;
+                }
+                const list = schedules.map(s => `- **${s.name}**: ${s.time} [${s.enabled !== false ? '✅' : '❌'}]\n  Prompt: \`${s.prompt}\``).join('\n');
+                await interaction.editReply(`### Scheduled Tasks\n\n${list}`);
+                return;
+            }
+
+            if (sub === 'add') {
+                const name = interaction.options.getString('name');
+                const time = interaction.options.getString('time');
+                const prompt = interaction.options.getString('prompt');
+
+                if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(time)) {
+                    await interaction.editReply('Invalid time format. Use HH:MM (e.g. 06:00).');
+                    return;
+                }
+
+                let schedules = [];
+                if (fs.existsSync(schedulesPath)) {
+                    schedules = JSON.parse(fs.readFileSync(schedulesPath, 'utf8'));
+                }
+
+                if (schedules.find(s => s.name === name)) {
+                    await interaction.editReply(`Task with name "${name}" already exists.`);
+                    return;
+                }
+
+                schedules.push({ name, time, prompt, enabled: true });
+                fs.writeFileSync(schedulesPath, JSON.stringify(schedules, null, 2), 'utf8');
+                await interaction.editReply(`Added task: **${name}** at ${time}`);
+                return;
+            }
+
+            if (sub === 'remove') {
+                const name = interaction.options.getString('name');
+                if (!fs.existsSync(schedulesPath)) {
+                    await interaction.editReply('No schedules found.');
+                    return;
+                }
+                let schedules = JSON.parse(fs.readFileSync(schedulesPath, 'utf8'));
+                const originalCount = schedules.length;
+                schedules = schedules.filter(s => s.name !== name);
+
+                if (schedules.length === originalCount) {
+                    await interaction.editReply(`Task "${name}" not found.`);
+                    return;
+                }
+
+                fs.writeFileSync(schedulesPath, JSON.stringify(schedules, null, 2), 'utf8');
+                await interaction.editReply(`Removed task: **${name}**`);
+                return;
+            }
         }
     } catch (error) {
         console.error('Interaction Error:', error);
