@@ -47,25 +47,25 @@ antigravityのAIチャットに以下のプロンプトを入力してくださ�
 も必要に応じてプロンプトを送信しても良いかもしれません。
 
 導入方法でわからないことやエラーがあれば都度antigravityのAIチャットで質問すればどうにか導入できるはずです。
-それと、許可ボタン周りの機能が不十分なので、拡張機能の　Antigravity Auto Accept　を入れて、AUTO　ACCEPTをONにしたほうが良い。
+それと、許可ボタン周りの機能（承認ブリッジ）が実装されましたが、より確実な動作のために拡張機能の Antigravity Auto Accept を併用し、AUTO ACCEPTをONにすることをお勧めします。
 
 ## 🚀 主な機能
 
 1.  **テキスト生成**: DiscordメッセージをそのままAntigravityに転送し、生成を開始します。
-2.  **ファイル添付**: 画像やテキストファイルを添付してAntigravityに送信できます。
-3.  **モデル切替**: `/model` コマンドでAIモデルを切り替えられます。
-4.  **モード切替**: `/mode` コマンドでPlanning/Fastモードを切り替えられます。
-5.  **スクリーンショット**: `/screenshot` コマンドで現在の画面を取得できます。
-6.  **生成停止**: `/stop` コマンドで生成を中断できます。
-7.  **新規チャット**: `/newchat` コマンドで新しい会話を開始できます。
-8.  **ファイル監視**: プロジェクトディレクトリ内のファイル変更を検知し、Discordに通知します。
+2.  **ファイル添付**: 画像やテキストファイルを添付してAntigravityに送信できます（`WATCH_DIR`の設定が必要）。
+3.  **モデル/モード切替**: `/model` コマンドでAIモデルを、`/mode` コマンドでPlanning/Fastモードを切り替えられます。
+4.  **承認ブリッジ**: Antigravity側で承認が必要なアクションが発生した際、Discord上に「Approve/Reject」ボタンを表示し、遠隔で操作可能です。
+5.  **スケジュール実行**: 指定した時間にプロンプトを自動送信するスケジュール機能を搭載。`/schedule` コマンドで管理できます。
+6.  **マルチウィンドウ対応**: `/list_windows` で複数のAntigravityウィンドウを一覧表示し、`/select_window` で操作対象を切り替えられます。
+7.  **ファイル監視**: プロジェクトディレクトリ内のファイル変更を検知し、Discordに通知します。
+8.  **スクリーンショット**: `/screenshot` コマンドで現在のAntigravity画面を取得できます。
 
 ## 🛠️ 事前準備 (Discord Botの作成)
 
 ### 1. Discord Botの作成とトークン取得
 1. [Discord Developer Portal](https://discord.com/developers/applications) にアクセスし、ログインします。
 2. 右上の **"New Application"** をクリックし、名前（例: `AntigravityBot`）を入力して作成します。
-3. 左メニューの **"Bot"** を選択し、**"Reset Token"** をクリックしてトークンを生成・コピーします。
+3. 左メニュー의 **"Bot"** を選択し、**"Reset Token"** をクリックしてトークンを生成・コピーします。
    - ※このトークンが `.env` の `DISCORD_BOT_TOKEN` になります。
 4. 同ページ（Botタブ）の下部にある **"Privileged Gateway Intents"** セクションで、以下を **ON** にします。
    - **PRESENCE INTENT**
@@ -142,16 +142,28 @@ antigravityのAIチャットに以下のプロンプトを入力してくださ�
 
 | コマンド | 説明 |
 |---|---|
-| `/help` | コマンド一覧を表示 |
-| `/status` | モデルとモードの状態を表示 |
+| `/help` | コマンド一覧と使いかたを表示 |
+| `/status` | 現在のモデルとモードの状態を表示 |
 | `/model` | 利用可能なモデル一覧を表示 |
-| `/model <番号>` | 指定したモデルに切り替える |
+| `/model number:<n>` | 指定した番号のモデルに切り替える |
 | `/mode` | 現在のモードを表示 |
-| `/mode <planning/fast>` | モードを切り替える |
-| `/title` | チャットタイトルを表示 |
-| `/newchat` | 新しいチャットを開始 |
-| `/stop` | 生成を停止 |
-| `/screenshot` | スクリーンショットを取得 |
+| `/mode target:<planning/fast>` | 指定したモードに切り替える |
+| `/title` | 現在のチャットセッションのタイトルを表示 |
+| `/newchat [prompt:<text>]` | 新しいチャットを開始（オプションで最初のプロンプトを送信） |
+| `/stop` | 現在進行中の生成を中断 |
+| `/screenshot` | 現在のAntigravityの画面を画像として取得 |
+| `/last_response` | 最新の返答を再取得し、ローカルにデバッグ用ダンプを保存 |
+| `/list_windows` | 接続可能なAntigravityウィンドウ（ポート 9222）を一覧表示 |
+| `/select_window number:<n>` | 操作対象のウィンドウを番号で選択 |
+| `/schedule list` | 登録済みの定期実行タスクを一覧表示 |
+| `/schedule add name:<n> time:<HH:MM> prompt:<p>` | 定期実行タスクを新規登録 |
+| `/schedule remove name:<n>` | 指定した名前のタスクを削除 |
+
+## 📅 スケジュール機能の詳細
+
+スケジュール機能は `workspace/schedules.json` に保存されます。
+- 指定した時刻（HH:MM）になると、ボットは自動的にAntigravityへプロンプトを送信します。
+- 実行結果は最後にアクティブだったチャンネル、または環境変数で指定されたテストチャンネルに返されます。
 
 ## 🛠️ 技術仕様
 
@@ -160,3 +172,4 @@ antigravityのAIチャットに以下のプロンプトを入力してくださ�
 ## 📜 ライセンス
 
 MIT License
+
