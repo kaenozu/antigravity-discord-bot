@@ -1,0 +1,8 @@
+[
+  {
+    "name": "Morning Saitama Weather",
+    "time": "06:00",
+    "prompt": "今日の埼玉の天気を教えて",
+    "enabled": true
+  }
+]

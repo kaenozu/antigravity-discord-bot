@@ -3206,7 +3206,7 @@ client.once('clientReady', async () => {
     if (startupCdp) console.log('Auto-connected to Antigravity on startup.');
     else console.log('Could not auto-connect to Antigravity on startup.');
 
-    setupWeatherScheduler();
+    setupExternalScheduler();
 
     try {
         console.log('Started refreshing application (/) commands.');
@@ -3494,7 +3494,7 @@ client.on('interactionCreate', async interaction => {
 
         if (commandName === 'weather_test') {
             await interaction.editReply('Triggering weather notification test...');
-            await triggerWeatherNotification('TEST');
+            await triggerScheduledTask("今日の埼玉の天気を教えて", 'TEST');
             return;
         }
     } catch (error) {
@@ -3582,56 +3582,69 @@ client.on('messageCreate', async message => {
     }
 });
 
-let lastWeatherNotificationDate = null;
-function setupWeatherScheduler() {
-    console.log('--- WEATHER SCHEDULER INITIALIZED (6:00 AM) ---');
-    setInterval(async () => {
-        const now = new Date();
-        const hour = now.getHours();
-        const minute = now.getMinutes();
-        const dateKey = now.toDateString();
+let lastScheduledTaskExecution = {}; // taskName -> dateKey
+function setupExternalScheduler() {
+    const schedulesPath = path.join(WORKSPACE_ROOT || path.join(process.cwd(), 'workspace'), 'schedules.json');
+    console.log(`--- EXTERNAL SCHEDULER INITIALIZED (Path: ${schedulesPath}) ---`);
 
-        if (hour === 6 && minute === 0 && lastWeatherNotificationDate !== dateKey) {
-            lastWeatherNotificationDate = dateKey;
-            await triggerWeatherNotification('SCHEDULED');
+    setInterval(async () => {
+        try {
+            if (!fs.existsSync(schedulesPath)) return;
+            const content = fs.readFileSync(schedulesPath, 'utf8');
+            const schedules = JSON.parse(content);
+            const now = new Date();
+            const hour = now.getHours();
+            const minute = now.getMinutes();
+            const timeStr = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+            const dateKey = now.toDateString();
+
+            for (const task of schedules) {
+                if (task.enabled === false) continue;
+                if (task.time === timeStr && lastScheduledTaskExecution[task.name] !== dateKey) {
+                    lastScheduledTaskExecution[task.name] = dateKey;
+                    await triggerScheduledTask(task.prompt, `SCHEDULED:${task.name}`);
+                }
+            }
+        } catch (e) {
+            console.error('Scheduler error:', e.message);
         }
     }, 60000); // Check every minute
 }
 
-async function triggerWeatherNotification(source = 'UNKNOWN') {
+async function triggerScheduledTask(prompt, source = 'UNKNOWN') {
     const targetChannel = lastActiveChannel || (TEST_CHANNEL_ID ? client.channels.cache.get(TEST_CHANNEL_ID) : null);
 
     if (!targetChannel) {
-        logInteraction('WARN', `[${source}] Weather notification triggered but no target channel found.`);
+        logInteraction('WARN', `[${source}] Task triggered but no target channel found.`);
         return;
     }
 
     const cdp = await ensureCDP();
     if (!cdp) {
-        logInteraction('ERROR', `[${source}] Weather notification failed: CDP not connected.`);
+        logInteraction('ERROR', `[${source}] Task failed: CDP not connected.`);
         return;
     }
 
-    logInteraction('ACTION', `[${source}] Triggering morning weather notification for Saitama.`);
+    logInteraction('ACTION', `[${source}] Triggering task: ${prompt.substring(0, 50)}...`);
 
     // Create a bridge message for monitorAIResponse
     const dummyMessage = {
         author: { id: ALLOWED_DISCORD_USER },
-        id: `sched-weather-${Date.now()}`,
-        content: "今日の埼玉の天気を教えて",
+        id: `sched-task-${Date.now()}`,
+        content: prompt,
         channel: targetChannel,
-        react: async (emoji) => logInteraction('DEBUG', `[Weather] Reacted with ${emoji}`),
+        react: async (emoji) => logInteraction('DEBUG', `[Task] Reacted with ${emoji}`),
         reply: async (payload) => {
             if (typeof payload === 'string') return targetChannel.send({ content: payload });
             return targetChannel.send(payload);
         }
     };
 
-    const res = await injectMessage(cdp, "今日の埼玉の天気を教えて");
+    const res = await injectMessage(cdp, prompt);
     if (res.ok) {
         monitorAIResponse(dummyMessage, cdp);
     } else {
-        logInteraction('ERROR', `[${source}] Failed to inject weather query: ${res.error || 'unknown'}`);
+        logInteraction('ERROR', `[${source}] Failed to inject task query: ${res.error || 'unknown'}`);
     }
 }
 
