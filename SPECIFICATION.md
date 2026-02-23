@@ -20,6 +20,7 @@ graph LR
 - **CDP (Chrome DevTools Protocol)**: AntigravityのWebView（iframe）内のDOMにアクセスし、ボタンクリックやテキスト取得を行います。
 - **Chokidar**: ファイルシステムの変更を監視し、Antigravityが生成したファイルや変更を検知してDiscordに通知します。
 - **Discord.js**: Discord APIとの通信を行います。
+- **Node-cron style Scheduler**: 指定時刻にタスクを実行する内部スケジューラ。
 
 ## 3. 機能詳細
 
@@ -42,13 +43,24 @@ graph LR
   1. モード切替トグルをクリック。
   2. ダイアログ内の "Planning" または "Fast" をクリック。
 
-### 3.4 チャットタイトル取得 (`/title`)
-- 現在のチャットセッションのタイトルを取得します。
-- **DOM操作**:
-  - `p.text-ide-sidebar-title-color` クラスを持つ要素を探し、そのテキストを取得します。
+### 3.4 承認ブリッジ
+- Antigravity側で「許可/拒否」を求めるダイアログ（ターミナル実行前など）が表示された際、それを検知してDiscordにボタン付きメッセージを送信します。
+- **仕組み**:
+  1. ポーリングにより `aria-label` が "Allow" や "Cancel" のボタンを含むダイアログを監視。
+  2. Discordのインタラクション（ボタンクリック）に応じて、CDP経由でAntigravity側の該当ボタンをクリックします。
 
-### 3.5 ファイル監視
-- プロジェクトルート（デフォルトはボットの親ディレクトリ、環境変数 `WATCH_DIR` や起動時の対話設定で指定可能）以下のファイル変更を監視します。
+### 3.5 スケジュール機能 (`/schedule`)
+- `workspace/schedules.json` に保存されたタスクを、指定時刻に自動実行します。
+- **仕組み**:
+  - `setInterval` による1分ごとのチェック。
+  - 実行時は擬似的なメッセージオブジェクトを作成し、既存のメッセージ注入フローに渡します。
+
+### 3.6 マルチウィンドウ対応
+- 複数のAntigravityウィンドウが開いている場合、デバッグポートを通じてどの一覧を取得し、操作対象を動的に変更できます。
+- `/list_windows` でターゲット一覧を取得し、`/select_window` で `webSocketDebuggerUrl` を切り替えます。
+
+### 3.7 ファイル監視
+- プロジェクトルート（環境変数 `WATCH_DIR`（内部変数 `WORKSPACE_ROOT`）で指定可能）以下のファイル変更を監視します。
 - 除外ファイル: `node_modules`, `.git`, `.env`, ログファイルなど。
 - 新規作成 (`add`) または変更 (`change`) があった場合、そのファイルパスと内容（テキストファイルの場合）をDiscordに通知します。
 
@@ -57,10 +69,14 @@ graph LR
 ### 必要な環境変数 (.env)
 - `DISCORD_BOT_TOKEN`: Discord Botのトークン
 - `DISCORD_ALLOWED_USER_ID`: 操作を許可するユーザーID（セキュリティのため制限）
-- `WATCH_DIR`: (任意) 監視対象のディレクトリパス。未指定の場合は起動時に対話的に設定を求められ、空欄でEnterを押すと監視機能が無効化されます。
+- `WATCH_DIR`: (任意) 監視対象のディレクトリパス。未指定の場合は起動時に対話的に設定を求められます。
 
 ### 依存関係
 - `discord.js`: ^14.x
 - `chokidar`: ^3.x
 - `ws`: ^8.x
 - `dotenv`: ^16.x
+
+## 5. ログ管理
+- `discord_interaction.log`: Botの動作ログ、コマンド実行履歴、CDP接続エラーなどを記録します。
+- `bot_log.txt`: 起動時のデバッグ情報などを記録します。

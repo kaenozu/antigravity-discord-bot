@@ -1,6 +1,6 @@
 import { Client, GatewayIntentBits, Partials, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, REST, Routes, MessageFlags } from 'discord.js';
 
-globalThis.isAutoApproval = false;
+
 globalThis.isWaitingForApproval = false;
 globalThis.generationStarted = false;
 console.log('--- GLOBAL STATE INITIALIZED ---');
@@ -21,8 +21,7 @@ const CDP_CALL_TIMEOUT = 30000;
 const POLLING_INTERVAL = 1000;
 const RAW_CLI_ARGS = process.argv.slice(2).map(arg => String(arg || ''));
 const CLI_ARGS = new Set(RAW_CLI_ARGS.map(arg => arg.toLowerCase()));
-const RUN_STARTUP_TEST = CLI_ARGS.has('--test');
-const EXIT_AFTER_STARTUP_TEST = RUN_STARTUP_TEST && !CLI_ARGS.has('--test-keepalive');
+
 
 function getCliArgValue(flagName) {
     const lower = String(flagName || '').toLowerCase();
@@ -41,7 +40,7 @@ function getCliArgValue(flagName) {
 }
 
 const TEST_CHANNEL_ID = (getCliArgValue('--test-channel') || process.env.DISCORD_TEST_CHANNEL_ID || '').trim();
-const RAW_DUMP_MODE = RUN_STARTUP_TEST
+const RAW_DUMP_MODE = false
     || CLI_ARGS.has('--raw-dump')
     || ['1', 'true', 'on'].includes((process.env.RAW_RESPONSE_DUMP || '').toLowerCase());
 const RAW_DUMP_FILE = (getCliArgValue('--raw-dump-file') || process.env.RAW_RESPONSE_DUMP_FILE || '').trim();
@@ -213,8 +212,8 @@ function isFinalSummaryLine(line) {
 function isStrongFinalSummaryLine(line) {
     const s = String(line || '').trim();
     if (!s) return false;
-    if (/(髫ｰ謔ｶ繝ｻ繝ｻ・ｮ陞｢・ｹ繝ｻ繝ｻ・ｹ・ｧ陟募ｨｯ陞ｺ驛｢譎｢・ｽ・ｯ驛｢譎｢・ｽ・ｼ驛｢・ｧ繝ｻ・ｯ驛｢・ｧ繝ｻ・ｹ驛｢譎擾ｽ｣・ｹ郢晢ｽｻ驛｢・ｧ繝ｻ・ｹ|髣比ｼ夲ｽｽ・･髣包ｽｳ闕ｵ譏ｴ繝ｻ驛｢譏ｴ繝ｻ邵ｺ繝ｻ・ｹ譎｢・ｽ・ｬ驛｢・ｧ繝ｻ・ｯ驛｢譎冗樟・主ｿｿ髣比ｼ夲ｽｽ・･髣包ｽｳ闕ｵ譏ｴ繝ｻ3驍ｵ・ｺ繝ｻ・､驍ｵ・ｺ繝ｻ・ｮ驛｢譎・ｽｼ譁撰ｼ憺Δ・ｧ繝ｻ・､驛｢譎｢・ｽ・ｫ|髣厄ｽｴ隲帛現繝ｻ驍ｵ・ｺ陷会ｽｱ遶擾ｽｪ驍ｵ・ｺ陷会ｽｱ隨ｳ繝ｻ髣厄ｽｴ隲帛現繝ｻ驍ｵ・ｺ隰疲ｻゑｽｽ・ｮ陟包ｽ｡繝ｻ・ｺ郢晢ｽｻ髣厄ｽｴ隲帛現繝ｻ驍ｵ・ｺ髴郁ｲｻ・ｽ讙趣ｽｸ・ｺ繝ｻ・ｾ驍ｵ・ｺ陷会ｽｱ隨ｳ繝ｻ髯橸ｽｳ陟包ｽ｡繝ｻ・ｺ郢晢ｽｻ繝ｻ・ｰ驍ｵ・ｺ繝ｻ・ｾ驍ｵ・ｺ陷会ｽｱ隨ｳ繝ｻ驍ｵ・ｺ鬯伜∞・ｽ・ｩ繝ｻ・ｦ驍ｵ・ｺ陷会ｽｱ繝ｻ・･驍ｵ・ｺ繝ｻ・ｰ驍ｵ・ｺ髴郁ｲｻ・ｼ譯埼Δ・ｧ繝ｻ・ｫ驛｢・ｧ繝ｻ・ｹ驛｢・ｧ繝ｻ・ｿ驛｢譎・ｽｧ・ｭ邵ｺ繝ｻ・ｹ・ｧ繝ｻ・ｺ|鬮ｫ・ｱ繝ｻ・ｿ髫ｰ・ｨ繝ｻ・ｴ)/i.test(s)) return true;
-    if (/^(the app has been created|i created the following files|created the following files)/i.test(s)) return true;
+    // Removed old corrupted markers. Basic English/Japanese summary patterns.
+    if (/^(the app has been created|i created the following files|created the following files|i have finished|task completed|完了しました|作成しました)/i.test(s)) return true;
     return false;
 }
 
@@ -226,7 +225,7 @@ function scoreParagraphForFinalSummary(paragraph) {
     if (!containsCjk(p) && /^(planning|developing|constructing|implementing|refining|finalizing|initiating|commencing|crafting|verifying|calculating|styling|building)\b/i.test(p)) score -= 900;
     if (/^(i('| a)m|i have|i've|i am|my aim is|i plan to|i'm currently|i'm focusing)/i.test(p)) score -= 800;
     if (/(index\.html|style\.css|script\.js|\.html|\.css|\.js)/i.test(p)) score += 120;
-    if (/(髫ｰ謔ｶ繝ｻ繝ｻ・ｮ陞｢・ｹ繝ｻ繝ｻ・ｹ・ｧ陟募ｨｯ陞ｺ驛｢譎｢・ｽ・ｯ驛｢譎｢・ｽ・ｼ驛｢・ｧ繝ｻ・ｯ驛｢・ｧ繝ｻ・ｹ驛｢譎擾ｽ｣・ｹ郢晢ｽｻ驛｢・ｧ繝ｻ・ｹ|髣比ｼ夲ｽｽ・･髣包ｽｳ闕ｵ譏ｴ繝ｻ驛｢譏ｴ繝ｻ邵ｺ繝ｻ・ｹ譎｢・ｽ・ｬ驛｢・ｧ繝ｻ・ｯ驛｢譎冗樟・主ｿｿ髣比ｼ夲ｽｽ・･髣包ｽｳ闕ｵ譏ｴ繝ｻ3驍ｵ・ｺ繝ｻ・､驍ｵ・ｺ繝ｻ・ｮ驛｢譎・ｽｼ譁撰ｼ憺Δ・ｧ繝ｻ・､驛｢譎｢・ｽ・ｫ|髣厄ｽｴ隲帛現繝ｻ驍ｵ・ｺ陷会ｽｱ遶擾ｽｪ驍ｵ・ｺ陷会ｽｱ隨ｳ繝ｻ髣厄ｽｴ隲帛現繝ｻ驍ｵ・ｺ隰疲ｻゑｽｽ・ｮ陟包ｽ｡繝ｻ・ｺ郢晢ｽｻ髣厄ｽｴ隲帛現繝ｻ驍ｵ・ｺ髴郁ｲｻ・ｽ讙趣ｽｸ・ｺ繝ｻ・ｾ驍ｵ・ｺ陷会ｽｱ隨ｳ繝ｻ髯橸ｽｳ陟包ｽ｡繝ｻ・ｺ郢晢ｽｻ繝ｻ・ｰ驍ｵ・ｺ繝ｻ・ｾ驍ｵ・ｺ陷会ｽｱ隨ｳ繝ｻ驍ｵ・ｺ鬯伜∞・ｽ・ｩ繝ｻ・ｦ驍ｵ・ｺ陷会ｽｱ繝ｻ・･驍ｵ・ｺ繝ｻ・ｰ驍ｵ・ｺ髴郁ｲｻ・ｼ譯皇reated|completed)/i.test(p)) score += 900;
+    if (/(created|completed|finished|summary|作成|完了)/i.test(p)) score += 900;
     if (containsCjk(p)) score += 220;
     if (/^(good|bad)$/im.test(p)) score -= 800;
     if (/info:\s*server is started/i.test(p)) score -= 1000;
@@ -758,35 +757,6 @@ async function emitRawDump(target, response, promptText = '', renderedContent = 
     logInteraction('ACTION', '[RAW_DUMP] Discord upload removed; kept local files only.');
 }
 
-async function safeReplyTarget(target, payload, options = {}) {
-    const preferReply = options.preferReply !== false;
-    const attempts = [];
-    const errors = [];
-
-    if (preferReply && typeof target?.reply === 'function') {
-        attempts.push({ name: 'target.reply', fn: () => target.reply(payload) });
-    }
-    if (typeof target?.followUp === 'function') {
-        attempts.push({ name: 'target.followUp', fn: () => target.followUp(payload) });
-    }
-    if (typeof target?.channel?.send === 'function') {
-        attempts.push({ name: 'target.channel.send', fn: () => target.channel.send(payload) });
-    }
-    if (typeof lastActiveChannel?.send === 'function') {
-        attempts.push({ name: 'lastActiveChannel.send', fn: () => lastActiveChannel.send(payload) });
-    }
-
-    for (const attempt of attempts) {
-        try {
-            const result = await attempt.fn();
-            return { ok: true, result, method: attempt.name };
-        } catch (e) {
-            errors.push(`${attempt.name}: ${e?.message || String(e)}`);
-        }
-    }
-
-    throw new Error(`Reply failed via all methods. ${errors.join(' | ') || 'no method available'}`);
-}
 
 async function sendResponseEmbeds(originalMessage, response, promptText = '') {
     if (!response?.text) return false;
@@ -861,133 +831,8 @@ function createInteractionReplyBridge(interaction, promptText = '') {
     };
 }
 
-function canSendChannel(channel) {
-    return Boolean(channel && typeof channel.send === 'function');
-}
 
-async function resolveStartupTestDestination() {
-    if (canSendChannel(lastActiveChannel)) {
-        const ch = lastActiveChannel;
-        return { channel: ch, label: `lastActiveChannel(${ch?.id || 'unknown'})` };
-    }
 
-    if (TEST_CHANNEL_ID) {
-        try {
-            const ch = await client.channels.fetch(TEST_CHANNEL_ID);
-            if (canSendChannel(ch)) return { channel: ch, label: `DISCORD_TEST_CHANNEL_ID(${TEST_CHANNEL_ID})` };
-            logInteraction('ERROR', `[TEST] DISCORD_TEST_CHANNEL_ID is not sendable: ${TEST_CHANNEL_ID}`);
-        } catch (e) {
-            logInteraction('ERROR', `[TEST] Failed to fetch DISCORD_TEST_CHANNEL_ID ${TEST_CHANNEL_ID}: ${e?.message || String(e)}`);
-        }
-    }
-
-    if (ALLOWED_DISCORD_USER_IS_ID) {
-        try {
-            const user = await client.users.fetch(ALLOWED_DISCORD_USER);
-            const dm = await user.createDM();
-            if (canSendChannel(dm)) return { channel: dm, label: `DM:${ALLOWED_DISCORD_USER}` };
-        } catch (e) {
-            logInteraction('ERROR', `[TEST] Failed to open DM for allowed user ${ALLOWED_DISCORD_USER}: ${e?.message || String(e)}`);
-        }
-    }
-
-    return null;
-}
-
-async function runStartupLastResponseTest() {
-    logInteraction('ACTION', '[TEST] Startup auto-test: begin latest response extraction');
-
-    const cdp = await ensureCDP();
-    if (!cdp) {
-        logInteraction('ERROR', '[TEST] CDP not found during startup test.');
-        return false;
-    }
-
-    const destination = await resolveStartupTestDestination();
-    if (!destination?.channel) {
-        logInteraction(
-            'ERROR',
-            '[TEST] No destination channel found. Use --test-channel <channel_id> or set DISCORD_TEST_CHANNEL_ID.'
-        );
-        return false;
-    }
-
-    logInteraction('ACTION', `[TEST] Destination resolved: ${destination.label}`);
-
-    let response = null;
-    try {
-        response = await getLastResponse(cdp);
-    } catch (e) {
-        logInteraction('ERROR', `[TEST] getLastResponse failed: ${e?.message || String(e)}`);
-        return false;
-    }
-
-    if (!response?.text) {
-        logInteraction('ERROR', '[TEST] getLastResponse returned empty text.');
-        try {
-            await destination.channel.send({ content: '[TEST] Failed: latest response could not be extracted from current Antigravity chat.' });
-        } catch (e) {
-            logInteraction('ERROR', `[TEST] Failed to send extraction-failure message: ${e?.message || String(e)}`);
-        }
-        return false;
-    }
-    if (isLowConfidenceResponse(response)) {
-        const lowConfidenceMsg = '[TEST] Failed: extracted content looked like IDE chrome, not chat response. Check active Antigravity window/layout.';
-        logInteraction('ERROR', `${lowConfidenceMsg} (selector=${response.selector || 'n/a'}, messageRoleCount=${response.messageRoleCount || 0})`);
-        try {
-            await destination.channel.send({ content: lowConfidenceMsg });
-        } catch (e) {
-            logInteraction('ERROR', `[TEST] Failed to send low-confidence message: ${e?.message || String(e)}`);
-        }
-        return false;
-    }
-
-    const target = {
-        content: '',
-        reply: async (payload) => destination.channel.send(payload),
-        followUp: async (payload) => destination.channel.send(payload),
-        channel: { send: async (payload) => destination.channel.send(payload) }
-    };
-
-    const guessedPrompt = String(response?.prompt || '').trim()
-        || detectPromptFromRawText(response?.text || '')
-        || detectPromptFromRawText(response?.markdown || '');
-    try {
-        const preamble = guessedPrompt
-            ? `[TEST] Extracted latest response from Antigravity. Prompt: ${guessedPrompt.slice(0, 300)}`
-            : '[TEST] Extracted latest response from Antigravity.';
-        await destination.channel.send({ content: preamble });
-    } catch (e) {
-        logInteraction('ERROR', `[TEST] Failed to send preamble message: ${e?.message || String(e)}`);
-    }
-
-    let sent = false;
-    try {
-        sent = await sendResponseEmbeds(target, response, guessedPrompt);
-    } catch (e) {
-        logInteraction('ERROR', `[TEST] sendResponseEmbeds failed: ${e?.message || String(e)}`);
-    }
-
-    if (!sent) {
-        try {
-            await destination.channel.send({ content: '[TEST] Failed: response extracted but local dump handling failed.' });
-        } catch (e) {
-            logInteraction('ERROR', `[TEST] Failed to send handling-failure message: ${e?.message || String(e)}`);
-        }
-        return false;
-    }
-
-    try {
-        await destination.channel.send({ content: '[TEST] OK: latest response extracted and saved locally.' });
-    } catch (e) {
-        logInteraction('ERROR', `[TEST] Failed to send success message: ${e?.message || String(e)}`);
-    }
-
-    logInteraction('SUCCESS', '[TEST] Startup auto-test completed successfully.');
-    return true;
-}
-
-// --- LOGGING ---
 // --- LOGGING ---
 const COLORS = {
     reset: "\x1b[0m",
@@ -2957,19 +2802,7 @@ async function processQueue(cdp) {
 
                 lastApprovalMessage = approval.message;
 
-                if (isAutoApproval) {
-                    logInteraction('AUTO-APPROVE', `Auto-approving: ${approval.message.substring(0, 50)}...`);
-                    await clickApproval(cdp, true);
-                    await originalMessage.reply(`✅ **Auto-Approved**:\n\`\`\`\n${approval.message.substring(0, 500)}\n\`\`\` `);
 
-                    // Wait for it to clear
-                    for (let j = 0; j < 15; j++) {
-                        if (!(await checkApprovalRequired(cdp))) break;
-                        await new Promise(r => setTimeout(r, 500));
-                    }
-                    setTimeout(poll, POLLING_INTERVAL);
-                    return;
-                }
 
                 globalThis.isWaitingForApproval = true; // ブロック開始
 
@@ -3053,6 +2886,7 @@ async function processQueue(cdp) {
                             logInteraction('DEBUG', 'Response matches snapshot (stale), waiting for new response...');
                             if (stableCount > 20) {
                                 logInteraction('ERROR', 'Timed out waiting for new response (snapshot did not change).');
+                                await originalMessage.react('❌').catch(() => { });
                                 isGenerating = false;
                                 isMonitoring = false;
                                 setTimeout(() => processQueue(cdp), 1000);
@@ -3062,6 +2896,7 @@ async function processQueue(cdp) {
                             return;
                         }
                         logInteraction('SUCCESS', `Response found: ${response.text.substring(0, 50)}...`);
+                        await originalMessage.react('✅').catch(() => { });
                         const chunks = response.text.match(/[\s\S]{1,1900}/g) || [response.text];
                         const header = `🤖 **AI Response (PID: ${process.pid} | Msg: ${originalMessage.id}):**\n`;
                         await originalMessage.reply({ content: header + chunks[0] });
@@ -3075,6 +2910,7 @@ async function processQueue(cdp) {
                         // If no response found yet, keep polling even if not generating (might be rendering)
                         if (stableCount > 20) { // Timeout after ~40s of nothing
                             logInteraction('ERROR', 'Generation finished but no response text found.');
+                            await originalMessage.react('❌').catch(() => { });
                             isGenerating = false;
                             isMonitoring = false;
                             setTimeout(() => processQueue(cdp), 1000);
@@ -3187,10 +3023,7 @@ const commands = [
             }
         ]
     },
-    {
-        name: 'weather_test',
-        description: 'Test the 6:00 AM weather notification immediately',
-    },
+
     {
         name: 'schedule',
         description: 'Manage scheduled tasks',
@@ -3227,8 +3060,18 @@ client.on('error', error => {
     console.error('Discord client error:', error);
 });
 
-client.once('clientReady', async () => {
+client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}`);
+
+    if (ALLOWED_DISCORD_USER_IS_ID) {
+        try {
+            const user = await client.users.fetch(ALLOWED_DISCORD_USER);
+            const dm = await user.createDM();
+            await dm.send('👋 Antigravity Bot が起動しました！準備完了です。');
+        } catch (e) {
+            console.error('Failed to send startup greeting:', e);
+        }
+    }
     setupFileWatcher();
 
     const startupCdp = await ensureCDP();
@@ -3249,24 +3092,7 @@ client.once('clientReady', async () => {
         console.error('Failed to reload application commands:', error);
     }
 
-    if (RUN_STARTUP_TEST) {
-        console.log('[TEST] Startup test mode enabled (--test).');
-        if (!TEST_CHANNEL_ID && !ALLOWED_DISCORD_USER_IS_ID && !canSendChannel(lastActiveChannel)) {
-            console.error('[TEST] Destination is not configured. Provide --test-channel <channel_id> (recommended).');
-            if (EXIT_AFTER_STARTUP_TEST) {
-                setTimeout(() => process.exit(1), 500);
-            }
-            return;
-        }
-        const ok = await runStartupLastResponseTest();
-        if (EXIT_AFTER_STARTUP_TEST) {
-            const exitCode = ok ? 0 : 1;
-            console.log(`[TEST] Completed. Exiting with code ${exitCode}.`);
-            setTimeout(() => process.exit(exitCode), 800);
-        } else {
-            console.log('[TEST] Completed. Keeping bot alive because --test-keepalive is enabled.');
-        }
-    }
+
 });
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
@@ -3524,11 +3350,7 @@ client.on('interactionCreate', async interaction => {
             return;
         }
 
-        if (commandName === 'weather_test') {
-            await interaction.editReply('Triggering weather notification test...');
-            await triggerScheduledTask("今日の埼玉の天気を教えて", 'TEST');
-            return;
-        }
+
 
         if (commandName === 'schedule') {
             const sub = interaction.options.getSubcommand();
@@ -3758,85 +3580,12 @@ async function triggerScheduledTask(prompt, source = 'UNKNOWN') {
         await ensureWatchDir();
         console.log(`📂 Watching directory: ${WORKSPACE_ROOT}`);
 
-        // ==========================================
-        // Local Test Mode (Bot <-> Antigravity test)
-        // ==========================================
-        if (process.argv.includes('--test')) {
-            console.log("=== RUNNING IN LOCAL TEST MODE ===");
-            try {
-                const discovered = await discoverCDP();
-                if (!discovered || !discovered.url) {
-                    console.error("Test Failed: Antigravity not found on debug port.");
-                    process.exit(1);
-                }
-                console.log(`Discovered Antigravity! URL: ${discovered.url}`);
+        // Standard Discord login
+        client.login(process.env.DISCORD_BOT_TOKEN).catch(e => {
+            console.error('Failed to login:', e);
+            process.exit(1);
+        });
 
-                const cdp = await connectCDP(discovered.url);
-                if (!cdp) throw new Error("Could not connect to CDP");
-                cdpConnection = cdp;
-
-                const testMsg = {
-                    author: { id: "test-user-id" },
-                    content: "PowerShellで現在のディレクトリに `approval_test.txt` という空ファイルを作ってみて。絶対にコマンドを実行すること。",
-                    reply: async function (replyObj) {
-                        console.log("===============================");
-                        console.log("[SIMULATED DISCORD REPLY]:");
-                        console.log(replyObj);
-                        console.log("===============================");
-
-                        const mockReplyMsg = {
-                            content: replyObj.content,
-                            edit: async function (editObj) {
-                                console.log("[SIMULATED DISCORD EDIT]:", editObj);
-                                return this;
-                            },
-                            awaitMessageComponent: async () => {
-                                console.log("[SIMULATED DISCORD AWAITING BUTTON] -> Auto Approving in 2s...");
-                                await new Promise(r => setTimeout(r, 2000));
-                                return {
-                                    customId: 'approve_action',
-                                    user: { id: "test-user-id" },
-                                    deferUpdate: async () => console.log("[SIMULATED DISCORD BUTTON] Update deferred")
-                                };
-                            }
-                        };
-                        return mockReplyMsg;
-                    },
-                    channel: {
-                        sendTyping: () => console.log("[SIMULATED] -> Sending typing indicator..."),
-                        send: async (msg) => console.log("[SIMULATED DISCORD SEND]:", msg)
-                    }
-                };
-
-                // Add to queue
-                requestQueue.push({ originalMessage: testMsg });
-
-                // Inject message manually first (since messageCreate handler isn't running)
-                const res = await injectMessage(cdp, testMsg.content);
-                if (!res.success && !res.ok) {
-                    throw new Error("Local Test failed: injectMessage returned false/error. " + (res.error || ""));
-                }
-
-                console.log("Injection succeeded. Starting response monitor.");
-                // Process response
-                monitorAIResponse(testMsg, cdp);
-
-                // For testing wait a bit to ensure async polling finishes
-                await new Promise(r => setTimeout(r, 60000)); // wait up to 60 seconds
-
-                console.log("=== LOCAL TEST FINISHED ===");
-                process.exit(0);
-            } catch (e) {
-                console.error("Test Error:", e);
-                process.exit(1);
-            }
-        } else {
-            // Standard Discord login
-            client.login(process.env.DISCORD_BOT_TOKEN).catch(e => {
-                console.error('Failed to login:', e);
-                process.exit(1);
-            });
-        }
     } catch (e) {
         console.error('Fatal Error:', e);
         process.exit(1);
