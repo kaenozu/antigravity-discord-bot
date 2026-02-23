@@ -2886,6 +2886,7 @@ async function processQueue(cdp) {
                             logInteraction('DEBUG', 'Response matches snapshot (stale), waiting for new response...');
                             if (stableCount > 20) {
                                 logInteraction('ERROR', 'Timed out waiting for new response (snapshot did not change).');
+                                await originalMessage.react('❌').catch(() => { });
                                 isGenerating = false;
                                 isMonitoring = false;
                                 setTimeout(() => processQueue(cdp), 1000);
@@ -2895,6 +2896,7 @@ async function processQueue(cdp) {
                             return;
                         }
                         logInteraction('SUCCESS', `Response found: ${response.text.substring(0, 50)}...`);
+                        await originalMessage.react('✅').catch(() => { });
                         const chunks = response.text.match(/[\s\S]{1,1900}/g) || [response.text];
                         const header = `🤖 **AI Response (PID: ${process.pid} | Msg: ${originalMessage.id}):**\n`;
                         await originalMessage.reply({ content: header + chunks[0] });
@@ -2908,6 +2910,7 @@ async function processQueue(cdp) {
                         // If no response found yet, keep polling even if not generating (might be rendering)
                         if (stableCount > 20) { // Timeout after ~40s of nothing
                             logInteraction('ERROR', 'Generation finished but no response text found.');
+                            await originalMessage.react('❌').catch(() => { });
                             isGenerating = false;
                             isMonitoring = false;
                             setTimeout(() => processQueue(cdp), 1000);
