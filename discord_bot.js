@@ -1,6 +1,6 @@
 import { Client, GatewayIntentBits, Partials, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, REST, Routes, MessageFlags } from 'discord.js';
 
-globalThis.isAutoApproval = false;
+
 globalThis.isWaitingForApproval = false;
 globalThis.generationStarted = false;
 console.log('--- GLOBAL STATE INITIALIZED ---');
@@ -213,8 +213,8 @@ function isFinalSummaryLine(line) {
 function isStrongFinalSummaryLine(line) {
     const s = String(line || '').trim();
     if (!s) return false;
-    if (/(髫ｰ謔ｶ繝ｻ繝ｻ・ｮ陞｢・ｹ繝ｻ繝ｻ・ｹ・ｧ陟募ｨｯ陞ｺ驛｢譎｢・ｽ・ｯ驛｢譎｢・ｽ・ｼ驛｢・ｧ繝ｻ・ｯ驛｢・ｧ繝ｻ・ｹ驛｢譎擾ｽ｣・ｹ郢晢ｽｻ驛｢・ｧ繝ｻ・ｹ|髣比ｼ夲ｽｽ・･髣包ｽｳ闕ｵ譏ｴ繝ｻ驛｢譏ｴ繝ｻ邵ｺ繝ｻ・ｹ譎｢・ｽ・ｬ驛｢・ｧ繝ｻ・ｯ驛｢譎冗樟・主ｿｿ髣比ｼ夲ｽｽ・･髣包ｽｳ闕ｵ譏ｴ繝ｻ3驍ｵ・ｺ繝ｻ・､驍ｵ・ｺ繝ｻ・ｮ驛｢譎・ｽｼ譁撰ｼ憺Δ・ｧ繝ｻ・､驛｢譎｢・ｽ・ｫ|髣厄ｽｴ隲帛現繝ｻ驍ｵ・ｺ陷会ｽｱ遶擾ｽｪ驍ｵ・ｺ陷会ｽｱ隨ｳ繝ｻ髣厄ｽｴ隲帛現繝ｻ驍ｵ・ｺ隰疲ｻゑｽｽ・ｮ陟包ｽ｡繝ｻ・ｺ郢晢ｽｻ髣厄ｽｴ隲帛現繝ｻ驍ｵ・ｺ髴郁ｲｻ・ｽ讙趣ｽｸ・ｺ繝ｻ・ｾ驍ｵ・ｺ陷会ｽｱ隨ｳ繝ｻ髯橸ｽｳ陟包ｽ｡繝ｻ・ｺ郢晢ｽｻ繝ｻ・ｰ驍ｵ・ｺ繝ｻ・ｾ驍ｵ・ｺ陷会ｽｱ隨ｳ繝ｻ驍ｵ・ｺ鬯伜∞・ｽ・ｩ繝ｻ・ｦ驍ｵ・ｺ陷会ｽｱ繝ｻ・･驍ｵ・ｺ繝ｻ・ｰ驍ｵ・ｺ髴郁ｲｻ・ｼ譯埼Δ・ｧ繝ｻ・ｫ驛｢・ｧ繝ｻ・ｹ驛｢・ｧ繝ｻ・ｿ驛｢譎・ｽｧ・ｭ邵ｺ繝ｻ・ｹ・ｧ繝ｻ・ｺ|鬮ｫ・ｱ繝ｻ・ｿ髫ｰ・ｨ繝ｻ・ｴ)/i.test(s)) return true;
-    if (/^(the app has been created|i created the following files|created the following files)/i.test(s)) return true;
+    // Removed old corrupted markers. Basic English/Japanese summary patterns.
+    if (/^(the app has been created|i created the following files|created the following files|i have finished|task completed|完了しました|作成しました)/i.test(s)) return true;
     return false;
 }
 
@@ -226,7 +226,7 @@ function scoreParagraphForFinalSummary(paragraph) {
     if (!containsCjk(p) && /^(planning|developing|constructing|implementing|refining|finalizing|initiating|commencing|crafting|verifying|calculating|styling|building)\b/i.test(p)) score -= 900;
     if (/^(i('| a)m|i have|i've|i am|my aim is|i plan to|i'm currently|i'm focusing)/i.test(p)) score -= 800;
     if (/(index\.html|style\.css|script\.js|\.html|\.css|\.js)/i.test(p)) score += 120;
-    if (/(髫ｰ謔ｶ繝ｻ繝ｻ・ｮ陞｢・ｹ繝ｻ繝ｻ・ｹ・ｧ陟募ｨｯ陞ｺ驛｢譎｢・ｽ・ｯ驛｢譎｢・ｽ・ｼ驛｢・ｧ繝ｻ・ｯ驛｢・ｧ繝ｻ・ｹ驛｢譎擾ｽ｣・ｹ郢晢ｽｻ驛｢・ｧ繝ｻ・ｹ|髣比ｼ夲ｽｽ・･髣包ｽｳ闕ｵ譏ｴ繝ｻ驛｢譏ｴ繝ｻ邵ｺ繝ｻ・ｹ譎｢・ｽ・ｬ驛｢・ｧ繝ｻ・ｯ驛｢譎冗樟・主ｿｿ髣比ｼ夲ｽｽ・･髣包ｽｳ闕ｵ譏ｴ繝ｻ3驍ｵ・ｺ繝ｻ・､驍ｵ・ｺ繝ｻ・ｮ驛｢譎・ｽｼ譁撰ｼ憺Δ・ｧ繝ｻ・､驛｢譎｢・ｽ・ｫ|髣厄ｽｴ隲帛現繝ｻ驍ｵ・ｺ陷会ｽｱ遶擾ｽｪ驍ｵ・ｺ陷会ｽｱ隨ｳ繝ｻ髣厄ｽｴ隲帛現繝ｻ驍ｵ・ｺ隰疲ｻゑｽｽ・ｮ陟包ｽ｡繝ｻ・ｺ郢晢ｽｻ髣厄ｽｴ隲帛現繝ｻ驍ｵ・ｺ髴郁ｲｻ・ｽ讙趣ｽｸ・ｺ繝ｻ・ｾ驍ｵ・ｺ陷会ｽｱ隨ｳ繝ｻ髯橸ｽｳ陟包ｽ｡繝ｻ・ｺ郢晢ｽｻ繝ｻ・ｰ驍ｵ・ｺ繝ｻ・ｾ驍ｵ・ｺ陷会ｽｱ隨ｳ繝ｻ驍ｵ・ｺ鬯伜∞・ｽ・ｩ繝ｻ・ｦ驍ｵ・ｺ陷会ｽｱ繝ｻ・･驍ｵ・ｺ繝ｻ・ｰ驍ｵ・ｺ髴郁ｲｻ・ｼ譯皇reated|completed)/i.test(p)) score += 900;
+    if (/(created|completed|finished|summary|作成|完了)/i.test(p)) score += 900;
     if (containsCjk(p)) score += 220;
     if (/^(good|bad)$/im.test(p)) score -= 800;
     if (/info:\s*server is started/i.test(p)) score -= 1000;
@@ -987,7 +987,6 @@ async function runStartupLastResponseTest() {
     return true;
 }
 
-// --- LOGGING ---
 // --- LOGGING ---
 const COLORS = {
     reset: "\x1b[0m",
@@ -2957,19 +2956,7 @@ async function processQueue(cdp) {
 
                 lastApprovalMessage = approval.message;
 
-                if (isAutoApproval) {
-                    logInteraction('AUTO-APPROVE', `Auto-approving: ${approval.message.substring(0, 50)}...`);
-                    await clickApproval(cdp, true);
-                    await originalMessage.reply(`✅ **Auto-Approved**:\n\`\`\`\n${approval.message.substring(0, 500)}\n\`\`\` `);
 
-                    // Wait for it to clear
-                    for (let j = 0; j < 15; j++) {
-                        if (!(await checkApprovalRequired(cdp))) break;
-                        await new Promise(r => setTimeout(r, 500));
-                    }
-                    setTimeout(poll, POLLING_INTERVAL);
-                    return;
-                }
 
                 globalThis.isWaitingForApproval = true; // ブロック開始
 
