@@ -3057,8 +3057,18 @@ client.on('error', error => {
     console.error('Discord client error:', error);
 });
 
-client.once('clientReady', async () => {
+client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}`);
+
+    if (ALLOWED_DISCORD_USER_IS_ID) {
+        try {
+            const user = await client.users.fetch(ALLOWED_DISCORD_USER);
+            const dm = await user.createDM();
+            await dm.send('👋 Antigravity Bot が起動しました！準備完了です。');
+        } catch (e) {
+            console.error('Failed to send startup greeting:', e);
+        }
+    }
     setupFileWatcher();
 
     const startupCdp = await ensureCDP();
